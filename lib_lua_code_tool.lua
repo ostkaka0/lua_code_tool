@@ -1,5 +1,5 @@
 #!/usr/bin/lua
--- © 2025 John Emanuelsson
+-- Author: John Emanuelsson
 -- File created 2025-04-05 15:46:33 CEST
 
 local lfs = require("lfs")

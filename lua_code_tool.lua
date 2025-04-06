@@ -1,5 +1,5 @@
 #!/usr/bin/lua
--- © 2025 John Emanuelsson
+-- Author: John Emanuelsson
 -- File created 2025-04-06 06:05:15 CEST
 
 -- TODO: Windows support

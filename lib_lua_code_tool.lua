@@ -2,8 +2,12 @@
 -- Author: John Emanuelsson
 -- File created 2025-04-05 15:46:33 CEST
 
-local lfs = require("lfs")
-local inspect =  require("inspect")
+local lfs = require "lfs"
+local inspect =  require "inspect"
+-- local fs = require "fs"
+local uv = require "luv"
+
+-- local USE_LUV = true
 
 local cf = {}
 
@@ -41,20 +45,56 @@ function cf.process_file_default(dir, filepath, options)
   end
   if dir:sub(1, #options.out_dir) == options.our_dir then return end -- Output can't be input
   if options.verbose then print("# " .. filepath .. ":") end
-  local file = io.open(full_path)
-  local src = file:read("*a")
-  file:close()
-  local out_src = options.process_src(src, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
-  -- print("out:" .. out_src)
-  if not out_src then return end
+
   local full_out_path = options.out_dir .. "/" .. full_path
   -- print("out_path:" .. full_out_path)
-  
-  local out_file, err = io.open(full_out_path, "w+")
-  -- print(out_file)
-  -- print(err)
-  out_file:write(out_src)
-  out_file:close()
+
+  if USE_LUV then
+    -- local fd, err = uv.fs_open(full_path)
+    -- local stat = uv.fs_stat(fd)
+    -- local src, err = uv.fs_read(fd, stat.size, 0)
+    -- uv.fs_close(fd)
+    -- if not src then error("Failed to read " .. fullpath) end
+    write_flags = 6*64 + 4*8 + 4
+    read_flags = 6*64 + 4*8 + 4
+    uv.fs_open(full_path, "r", read_flags, function(err, fd)
+      -- print("A: " .. full_path)
+      if err then error("Failed to open " .. full_path) end
+      uv.fs_fstat(fd, function(err, stat)
+        -- print("B: " .. full_path)
+        if err then error("fs_fstat() failed for " .. fullpath) end
+        uv.fs_read(fd, stat.size, read_flags, function(err, src)
+          -- print("C: " .. full_path)
+          if err then error("Failed reading " .. fullpath) end
+          local out_src = options.process_src(src, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
+          -- print("out:" .. out_src)
+          if not out_src then return end
+          uv.fs_open(full_out_path, "w", write_flags, function(err, out_fd)
+            -- print("D: " .. full_path)
+            if err then error("fs_open() failed for " .. full_out_path) end
+            uv.fs_write(out_fd, out_src, -1, function(err)
+              -- print("E: " .. full_path)
+              if err then error("fs_write failed for " .. full_out_path) end
+            end)
+          end)
+        end)
+      end)
+    end)
+
+    
+  else  
+    local file = io.open(full_path)
+    local src = file:read("*a")
+    file:close()
+    local out_src = options.process_src(src, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
+    -- print("out:" .. out_src)
+    if not out_src then return end
+    local out_file, err = io.open(full_out_path, "w+")
+    -- print(out_file)
+    -- print(err)
+    out_file:write(out_src)
+    out_file:close()
+  end
 end
 
 cf.default_options = {
@@ -83,15 +123,23 @@ function cf.process_files(options)
     if options.verbose then print("mkdir -p " .. options.out_dir .. "/" .. dir) end
     os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
     -- print("dir:" .. dir)
+    
     for filepath in lfs.dir(dir) do
+      local full_path = dir .. "/" .. filepath
       local attr = lfs.attributes(dir .. "/" .. filepath)
-      -- print("Walking path: " .. dir .. "/" .. filepath)
-      -- print("mode:" .. attr.mode)
+      local filetype = attr.mode
+    -- for _, filepath in ipairs(fs.readdirSync(dir)) do
+    --   local full_path = dir .. "/" .. filepath
+    --   local stat = fs.stat(full_path)
+    --   print(inspect(stat))
+    --   local filetype = stat.type
+      print("Walking path: " .. dir .. "/" .. filepath)
+      print("filetype: " .. filetype)
       if filepath ~= "." and filepath ~= ".." then
-        if attr.mode == "file" then
+        if filetype == "file" then
           -- TODO: Use io.popen
           options.process_file(dir, filepath, options)
-        elseif attr.mode == "directory" then
+        elseif filetype == "directory" then
           table.insert(dirs, dir .. "/" .. filepath)
         end
       end

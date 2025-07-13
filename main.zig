@@ -10,7 +10,10 @@ const Lua = zlua.Lua;
 const assert = std.debug.assert;
 const os = std.os;
 const Thread = std.Thread;
+const Semaphore = Thread.Semaphore;
+const Allocator = std.mem.Allocator;
 
+fn minus_one(comptime T:type) T {return -%@as(T, 1);}
 // pub fn BlockingMpmc(size: u32) type {
 //   return struct {
 //     queue: Mpmc(size),
@@ -216,71 +219,96 @@ const FileTask = struct {
   
 };
 
-const Work = struct {
-  next: ?*Work,
-  co: *Lua,
-  path: [:0]const u8,
-  yield_strs: ArrayList([:0]const u8), // events being wated on
-  waiting_strs: ArrayList([:0]const u8), // Same as yield_strs, except that elements wil lbe removed when satisfied
-  thread_idx: u32,
-};
+// const Work = struct {
+//   next: ?*Work,
+//   co: *Lua,
+//   path: [:0]const u8,
+//   yield_strs: ArrayList([:0]const u8), // events being wated on
+//   waiting_strs: ArrayList([:0]const u8), // Same as yield_strs, except that elements wil lbe removed when satisfied
+//   thread_idx: u32,
+// };
 
-const ThreadData = struct {
-  head: ?*Work,
-  cond_var: std.Thread.Condition,
-};
+// const ThreadData = struct {
+//   head: ?*Work,
+//   cnd_var: std.Thread.Condition,
+//   waiting: bool,
+// };
 
 fn Fifo(comptime T: type, comptime size: isize) type {
   return std.fifo.LinearFifo(T, std.fifo.LinearFifoBufferType{.static=size});
 }
+
+const ObjListener = struct {
+  next: ?*ObjListener,
+  trigger_sem: Thread.Semaphore,
+  co: *Lua,
+};
 
 const Program = struct {
   // channel: std.Channel(u32),
   const size = 1024;
   num_thrds: u32,
 
+  // Main queue containing filepaths to process
   queue: Mpmc(size),
   queue_elems: [size][:0]const u8,
-  // producer_sem: std.Thread.Semaphore,
+  producer_sem: std.Thread.Semaphore,
   // consumer_sem: std.Thread.Semaphore,
 
-  mutex: std.Thread.Mutex,
-  ThreadData: []ThreadData,
-  waiters: Fifo(Thread.Condition, size),
-  listeners: std.AutoHashMap([:0]const u8, *Work),
-  // TODO: Use a lockfree hashmap(except lock on resize)
-  objs: std.AtuoHashMap([:0]const u8, [:0]const u8),
+  // Queue of semaphores for waiting consumer threads
+  num_waiters: std.atomic.Value(u32), // This atomic u32 is used for ensuring no threads get abandoned due to bad synchronization. If a thread is about to push semaphore, but the producer thread sees an empty semaphore-queue, then we got an underutilization-bug(and perhaps even "deadlock") because the producer thread is supposed to wake up but doesn't. Incrementing num_waiters will notify the producer thread that a thread might go into waiting state, so the producer thread will spin lock until either the producer thread found some other work to do or is done pushing to consumer_sem_queue.
+  consumer_sem_queue: Mpmc(size), // TODO: Make the size of threadpool
+  consumer_sem_queue_elems: [size]Thread.Semaphore,
+
+
+
+  obj_mutex: Thread.Mutex,
+  obj_listeners: std.AutoHashMap([:0]const u8, *ObjListener),
+  objs: std.AutoHashMap([:0]const u8, [:0]const u8),
+
+  // mutex: std.Thread.Mutex,
+  // ThreadData: []ThreadData,
+  // waiters: Fifo(Thread.Condition, size),
+  // // listeners: std.AutoHashMap([:0]const u8, *Work),
+  // // // TODO: Use a lockfree hashmap(except lock on resize)
+  // // objs: std.AtuoHashMap([:0]const u8, [:0]const u8),
   
 
   
   
   close: std.atomic.Value(bool),
 
-  pub fn init(num_thrds: u32) Program {
+  pub fn init(num_thrds: u32, allocator: Allocator) Program {
     assert(num_thrds <= size);
-    return Program{
+    return Program {
       // .channel = std.Channel(u32).init(allocator, 1024)
       .num_thrds = num_thrds,
       .queue = Mpmc(size).init(),
       .queue_elems = undefined,
       .producer_sem = .{.permits = 1+0*size},
-      .consumer_sem = .{},
+      // .consumer_sem = .{},
+      .num_waiters = std.atomic.Value(u32).init(0),
+      .consumer_sem_queue = Mpmc(size).init(),
+      .consumer_sem_queue_elems = undefined,
+      .obj_mutex = .{},
+      .obj_listeners = std.AutoHashMap([:0]const u8, *ObjListener).init(allocator),
+      .objs = std.AutoHashMap([:0]const u8, [:0]const u8).init(allocator),
       .close = std.atomic.Value(bool).init(false),
     };
   }
-  pub fn push_filepath(path: [:0]const u8) void {
+  // pub fn push_filepath(path: [:0]const u8) void {
     
-  }
-  pub fn trigger_event(event: [:0]const u8) void {
+  // }
+  // pub fn trigger_event(event: [:0]const u8) void {
     
-  }
+  // }
   pub fn deinit(self: *Program) void {
     debug.print("PROGRAM DEINIT", .{});
     // self.channel.deinit();
     self.close.store(true, .seq_cst);
-    for (0..size) |_| {
-      self.consumer_sem.post();
-    }
+    // for (0..size) |_| {
+    //   self.consumer_sem.post();
+    // }
   }
 };
 
@@ -303,27 +331,87 @@ fn thrd_function(program: *Program) !void {
     // }
   };
 
+  var sem: Semaphore = .{};
+  var is_waiter = false;
+
+  var notified_obj_listener = std.atomic.Value(?*ObjListener).init(null);
+
+
   while(true) {
-    debug.print("Gonna wait\n", .{});
-    program.consumer_sem.wait();
-    debug.print("done wait\n", .{});
+    // debug.print("Gonna wait\n", .{});
+    // program.consumer_sem.wait();
+    // program.mutex.lock();
+    // thread_data.waiting = true;
+    // program.waiters.push(thread_data.cnd_var);
+    // thread_data.cnd_var.wait(program.mutex);
+    
+    // debug.print("done wait\n", .{});
+
+    //// Resume coroutine if obj-listener have been notified
+    const obj_listener = notified_obj_listener.load(.seq_cst);
+    if (obj_listener != null) {
+      if (is_waiter) {
+        const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
+        assert(num_waiters > 0);
+        is_waiter = false;
+      }
+      notified_obj_listener.store(null, .seq_cst);
+      obj_listener.?.trigger_sem.post();
+      // const key = obj_listener.key;
+      // const obj = obj_listener.obj;
+      const co = obj_listener.?.co;
+      assert(false); // TODO: free: // allocator.free(obj_listener.?);
+
+      // TODO: resume coroutine
+      assert(false);
+      // Call coroutine
+      var num_results: i32 = undefined;
+      const status = try co.resumeThread(lua, 0, &num_results);
+      if (status == .ok) {
+        co.pop(num_results);
+        try co.closeThread(lua);
+      } else if (status == .yield) {
+        assert(false); // TODO: Push to event-maps.
+      } else unreachable;
+    }
+
+    //// Try pop filepath from queue, otherwise wait and continue loop
+    if (!is_waiter) { // Ensure producer thread is able to wake up this thread, by spinlocking the producer when num_waiters > 0.
+      _ = program.num_waiters.fetchAdd(1, .seq_cst);
+      is_waiter = true;
+    }
     const idx: u32 = program.queue.pop_bgn();
     debug.print("{}", .{@as(i32, @bitCast(idx))});
     if (idx == ~@as(u32, 0)) {
-      assert(program.close.load(.seq_cst) == true);
-      debug.print("Gonna close\n", .{});
-      break;
+      if (program.close.load(.seq_cst) == true) {
+        break;
+      }
+      const idx2 = program.consumer_sem_queue.psh_bgn();
+      assert(idx2 != minus_one(u32));
+      program.consumer_sem_queue_elems[idx2] = sem;
+      program.consumer_sem_queue.psh_end(idx2);
+      sem.wait();
+      continue;
+    }
+    assert(is_waiter);
+    if (is_waiter) {
+      const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
+      assert(num_waiters > 0);
+      is_waiter = false;
     }
     debug.print("..\n", .{});
-    defer {
-      program.queue.pop_end(idx);
-      program.producer_sem.post();
-    }
 
+    // Grab element and end pop.
     const path = program.queue_elems[idx];
     debug.print("We got path: {s}\n", .{path});
+    program.queue.pop_end(idx);
+    program.producer_sem.post();
+    // program.mutex.unlock();
 
+
+    //// Call a lua-coroutine with file content as parameter    
     // TODO: Make process_file optional, alternatives like process_line could be added perhaps.
+    // Get the coroutine and create lua-thread
     _ = lua.getGlobal("process_file") catch {
       debug.print("error: no variable process_file found!\n", .{});
       // std.process.exit(-1);
@@ -337,15 +425,15 @@ fn thrd_function(program: *Program) !void {
     }
     const co: *Lua = lua.newThread();
     lua.xMove(co, 1);
-    
+
+    // Call coroutine
     var num_results: i32 = undefined;
     const status = try co.resumeThread(lua, 0, &num_results);
-    
     if (status == .ok) {
       co.pop(num_results);
-      co.closeThread(lua);
+      try co.closeThread(lua);
     } else if (status == .yield) {
-      assert(0); // TODO: Push to event-maps.
+      assert(false); // TODO: Push to event-maps.
     } else unreachable;
   }
   debug.print("Closing thread function\n", .{});
@@ -361,7 +449,7 @@ pub fn main() !void {
   const thrds = try allocator.alloc(std.Thread, thrd_cnt);
   defer allocator.free(thrds);
 
-  var program = Program.init();
+  var program = Program.init(thrd_cnt, allocator);
   // defer program.deinit();
 
   for (thrds) |*thrd| {
@@ -406,15 +494,31 @@ pub fn main() !void {
     const t = time.nanoTimestamp();
     try ArrayList(i128).append(&timestamps, t);
     debug.print("Producer waiting...\n", .{});
+
+    // Push filepath to queue
     program.producer_sem.wait();
     const idx = program.queue.psh_bgn();
     debug.print("Producer idx: {}\n", .{idx});
     assert(idx != ~@as(u32, 0));
-
     program.queue_elems[idx] = d.path;
-
     program.queue.psh_end(idx);
-    program.consumer_sem.post();
+
+    // Now notify a thread
+    while(program.num_waiters.load(.seq_cst) != 0) {
+      const sem_queue_idx = program.consumer_sem_queue.pop_bgn();
+      if (sem_queue_idx == ~@as(u32, 0)) {
+        continue; // Pop failed
+      }
+      const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
+      assert(num_waiters > 0);
+      var consumer_sem = program.consumer_sem_queue_elems[sem_queue_idx];
+      program.consumer_sem_queue.pop_end(sem_queue_idx);
+      consumer_sem.post();
+      break;
+    }
+    
+    //
+    // program.consumer_sem.post();
     // debug.print("Path: {s}\n", .{d.path});
   }
   // }

@@ -360,11 +360,12 @@ fn thrd_function(program: *Program) !void {
     var co: *Lua = undefined;
     const obj_listener = notified_obj_listener.load(.seq_cst);
     if (obj_listener != null) {
-      if (is_waiter) {
-        const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
-        assert(num_waiters > 0);
-        is_waiter = false;
-      }
+      assert(!is_waiter);
+      // if (is_waiter) {
+      //   // const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
+      //   // assert(num_waiters > 0);
+      //   is_waiter = false;
+      // }
       notified_obj_listener.store(null, .seq_cst);
       obj_listener.?.trigger_sem.post();
       // const key = obj_listener.key;
@@ -391,6 +392,7 @@ fn thrd_function(program: *Program) !void {
         debug.print("Consumer waiting\n", .{});
         sem.wait();
         debug.print("Consumer done waiting!", .{});
+        is_waiter = false;
         continue;
       }
       assert(is_waiter);
@@ -541,7 +543,6 @@ pub fn main() !void {
   defer ArrayList(i128).deinit(timestamps);
   
   // if (true) {
-  // TODO: Prevent infinite loop
   while(try walker.next()) |d| {
     // _ = d;
     const t = time.nanoTimestamp();
@@ -564,8 +565,8 @@ pub fn main() !void {
       if (sem_queue_idx == ~@as(u32, 0)) {
         continue; // Pop failed
       }
-      // const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
-      // assert(num_waiters > 0);
+      const num_waiters = program.num_waiters.fetchSub(1, .seq_cst);
+      assert(num_waiters > 0);
       const consumer_sem = program.consumer_sem_queue_elems[sem_queue_idx];
       program.consumer_sem_queue.pop_end(sem_queue_idx);
       debug.print("Producer signal consumer\n", .{});

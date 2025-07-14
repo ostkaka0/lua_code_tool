@@ -1,2 +1,21 @@
 print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
+-- print("Hello!")
 
+
+function process_file(filepath)
+  print("Processing file " .. filepath)
+end

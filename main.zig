@@ -249,6 +249,7 @@ const Program = struct {
   const size = 1024;
   allocator: Allocator,
   num_thrds: u32,
+  dir: fs.Dir,
 
   // Main queue containing filepaths to process
   queue: Mpmc(size),
@@ -279,12 +280,13 @@ const Program = struct {
   
   close: std.atomic.Value(bool),
 
-  pub fn init(num_thrds: u32, allocator: Allocator) Program {
+  pub fn init(num_thrds: u32, allocator: Allocator, dir: fs.Dir) Program {
     assert(num_thrds <= size);
     return Program {
       .allocator = allocator,
       // .channel = std.Channel(u32).init(allocator, 1024)
       .num_thrds = num_thrds,
+      .dir = dir,
       .queue = Mpmc(size).init(),
       .queue_elems = undefined,
       .producer_sem = .{.permits = 1+0*size},
@@ -314,6 +316,7 @@ const Program = struct {
   }
 };
 
+// TODO: Abstract the producer-consumer with events system
 fn thrd_function(program: *Program) !void {
   const allocator = program.allocator;
 
@@ -405,11 +408,23 @@ fn thrd_function(program: *Program) !void {
 
       // Grab element and end pop.
       const path = program.queue_elems[idx];
-      debug.print("We got path: {s}\n", .{path});
+      debug.print("We got path:'{s}', the strlen is {}\n", .{path, path.len});
+      debug.print("Index of null terminator is: {?}\n", .{std.mem.indexOfScalar(u8, path, 0)});
+      debug.print("Index of null terminator is: {?}\n", .{std.mem.indexOfScalar(u8, "action.cdebug.h.", 0)});
       program.queue.pop_end(idx);
       debug.print("Consumer signal producer\n", .{});
       program.producer_sem.post();
       // program.mutex.unlock();
+
+      // Open file:
+      const file: fs.File = try fs.Dir.openFile(program.dir, path, .{.mode = .read_only, .lock = .exclusive});
+      const file_size: u64 = try file.getEndPos();
+      const src = try allocator.alloc(u8, @intCast(file_size));
+      defer allocator.free(src);
+      const bytes_read = try file.readAll(src);
+      assert(bytes_read == file_size);
+      file.close();
+      
 
 
       //// Create a lua-thread(coroutine)    
@@ -431,9 +446,10 @@ fn thrd_function(program: *Program) !void {
         // std.process.exit(-1);
         continue;
       }
-      num_args = 1;
-      _ = co.pushString(path); // First argument to function is filepath
+      num_args = 2;
+      _ = co.pushString(path); // 1st argument to function is filepath
       // lua.xMove(co, 1);
+      _ = co.pushString(src); // 2nd argument is src 
     }
 
     // Call coroutine
@@ -503,7 +519,8 @@ pub fn main() !void {
   const thrds = try allocator.alloc(std.Thread, thrd_cnt);
   defer allocator.free(thrds);
 
-  var program = Program.init(thrd_cnt, allocator);
+  const cwd: fs.Dir = try fs.Dir.openDir(fs.cwd(), "./../vxl/src/", .{.access_sub_paths = true, .iterate = true});
+  var program = Program.init(thrd_cnt, allocator, cwd);
   // defer program.deinit();
 
   for (thrds) |*thrd| {
@@ -533,7 +550,7 @@ pub fn main() !void {
   // };
 
   const t0 = time.nanoTimestamp();
-  const cwd = try fs.Dir.openDir(fs.cwd(), "./../vxl/src/", .{.access_sub_paths = true, .iterate = true});
+  
   // var dir = try fs.Dir.openDir(cwd, "src");
   // var walker = try fs.Dir.walk(cwd, allocator);
   var walker = try cwd.walk(arena_allocator);
@@ -544,6 +561,7 @@ pub fn main() !void {
   
   // if (true) {
   while(try walker.next()) |d| {
+    if (d.kind != .file) continue;
     // _ = d;
     const t = time.nanoTimestamp();
     try ArrayList(i128).append(&timestamps, t);
@@ -556,7 +574,10 @@ pub fn main() !void {
     const idx = program.queue.psh_bgn();
     debug.print("Producer idx: {}\n", .{idx});
     assert(idx != ~@as(u32, 0));
-    program.queue_elems[idx] = d.path;
+    // const the_path: [] const u8 = std.mem.span(@as([*:0] const u8, d.path));
+    const the_path = try allocator.dupe(u8, d.path);
+    debug.print("Path: {s}\n", .{the_path});
+    program.queue_elems[idx] = the_path;
     program.queue.psh_end(idx);
 
     // Now notify a thread

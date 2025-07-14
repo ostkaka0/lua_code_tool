@@ -16,6 +16,9 @@ print("Hello!")
 -- print("Hello!")
 
 
-function process_file(filepath)
+function process_file(filepath, src)
   print("Processing file " .. filepath)
+  print("File has size " .. #src)
+  -- print("Src is: ")
+  -- print(src)
 end

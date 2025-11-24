@@ -14,16 +14,30 @@
 -- TODO: Individual file inputs
 -- TODO: Consider replacing argparse, and remove requirement for " and ' of code-arguments
 
--- Weird hack to load local script files:
-local script_dir = debug.getinfo(1, "S").source:match("@(.*[\\/])")
--- print(script_dir)
-package.path = package.path .. ";" .. script_dir .. "?.lua"
--- local libpath = (...)match(".-)[^%.]+$")
--- print(libpath)
+local function file_exists(filename)
+  local f = io.open(filename, "r")
+  if f ~= nil then
+    io.close(f)
+    return true
+  else
+    return false
+  end
+end
 
-local cf = require("lib_lua_code_tool")
+-- -- Weird hack to load local script files:
+-- -- print(debug.getinfo(1, "S").source:match("@(.*)"))
+-- -- print(debug.getinfo(1, "S").source:match("@(.*[\\/])") or "./")
+-- local script_dir = debug.getinfo(1, "S").source:match("@(.*[\\/])") or "./"
+-- -- print(script_dir)
+-- package.path = package.path .. ";" .. script_dir .. "?.lua"
+-- -- print(package.path)
+-- -- local libpath = (...)match(".-)[^%.]+$")
+-- -- print(libpath)
+
+local lct = require("lib_lua_code_tool")
 local argparse = require("argparse")
 local inspect = require("inspect")
+local lfs = require "lfs"
 
 -- local function process_src_print(s, args)
 --   s = "// " .. inspect(args):gsub("\n","\n// ") .. "\n" .. s
@@ -38,6 +52,8 @@ local inspect = require("inspect")
 local parser = argparse()
   :name "Codeforge"
   :description "A tool refactoring, searching and generating code."
+
+
 
 parser:mutex(
   parser:flag "-v" "--verbose",
@@ -75,7 +91,7 @@ parser:argument "code" :args("?")
 local args = parser:parse()
 if args.verbose then print("Args: " .. inspect(args)) end
 
-local out_dir = args.output_directory or cf.default_options.out_dir
+local out_dir = args.output_directory or lct.default_options.out_dir
 local modified_out_dir = out_dir:gsub("[./\\]", "")
 -- print("here: " .. modified_out_dir)
 assert(#modified_out_dir > 0, "output directory is incorrect")
@@ -105,6 +121,15 @@ local env = {
   print = print
 }
 
+local lock_filename = out_dir .. "/lct.lock"
+if not args.clean then
+  os.execute("mkdir -p " .. out_dir)
+  -- print(lock_filename)
+  if file_exists(lock_filename) then
+    error("File '" .. lock_filename .. "' already exists, could not lock output directory")
+  end
+end
+
 if args.clean or (code and not args.keep) then
   local cmd = "rm -rf ./" .. out_dir
   if args.verbose then print(cmd) end
@@ -117,7 +142,7 @@ if code then
   assert(err == nil)
   -- print(func)
   -- print(err)
-  -- print("cf: " .. inspect(cf))
+  -- print("lct: " .. inspect(lct))
 
   local function print_func(_, _)
     print('HELLO from print_func')
@@ -125,8 +150,18 @@ if code then
 
   -- func("LOOK HERE", {})
   -- print_func("here", {})
-  cf.process_files({process_src = func, in_dirs = args.directory, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet})
+  do
+    print("mkdir -p " .. out_dir)
+    os.execute("mkdir -p " .. out_dir)
+    local f = io.open(lock_filename, "w")
+    assert(f)
+    f:write("")
+    f:close()
+  end
+  lct.process_files({process_src = func, in_dirs = args.directory, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir})
+  os.remove(lock_filename)
 end
+os.execute('rmdir "'.. out_dir ..'" 2>/dev/null')
 
 -- if args.directory and next(args.directory) then
 --   for _, d in ipairs(args.directory) do
@@ -138,7 +173,7 @@ if not args.quiet then
   if not args.no_pager then
     diff_cmd = diff_cmd .. " | less --raw-control-chars -FX"
   end
-  os.execute(diff_cmd)
+  os.execute("if [ -d " .. out_dir .. " ]; then\n " .. diff_cmd .. "\nfi")
 end
 
 if args.in_place then

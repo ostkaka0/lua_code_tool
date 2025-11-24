@@ -13,6 +13,8 @@ const Thread = std.Thread;
 const Semaphore = Thread.Semaphore;
 const Allocator = std.mem.Allocator;
 
+fn foo() @callconv(.c) c_int {return 0;}
+
 fn minus_one(comptime T:type) T {return -%@as(T, 1);}
 // pub fn BlockingMpmc(size: u32) type {
 //   return struct {
@@ -316,6 +318,19 @@ const Program = struct {
   }
 };
 
+  
+
+fn lua_push_table(lua_state: ?*zlua.LuaState) @callconv(.C) c_int {
+  const n = lua.getTop();
+  if (n != 2) {
+    lua.raiseErrorStr("Expected 2 arguments, got {}", .{n});
+    return -1;
+  }
+  const key = lua.checkString(1);
+  const val = lua.toString(2);
+  debug.print("Lua pushed ({s}, {s})\n", .{key, val});
+}
+
 // TODO: Abstract the producer-consumer with events system
 fn thrd_function(program: *Program) !void {
   const allocator = program.allocator;
@@ -323,6 +338,12 @@ fn thrd_function(program: *Program) !void {
   var lua: *Lua = try Lua.init(allocator);
   defer lua.deinit();
   lua.openLibs();
+  const fn_reg: [] const zlua.FnReg = {
+    
+  };
+  lua.newLib(fn_reg);
+
+  
   try lua.doString("print('helloooo')");
   const lua_file = "./lua_test.lua";
   _ = lua.doFile(lua_file) catch |e| {

@@ -9,9 +9,9 @@ local uv = require "luv"
 
 -- local USE_LUV = true
 
-local cf = {}
+local lct = {}
 
-function cf.set_defaults(trgt, src)
+function lct.set_defaults(trgt, src)
   for k, v in pairs(src) do
     if trgt[k] == nil then
       trgt[k] = v
@@ -19,8 +19,8 @@ function cf.set_defaults(trgt, src)
   end
 end
 
-function cf.set_defaults_strict(trgt, src)
-  cf.set_defaults(trgt, src)
+function lct.set_defaults_strict(trgt, src)
+  lct.set_defaults(trgt, src)
   -- print(inspect(src))
   -- print(inspect(trgt))
   for k, _ in pairs(trgt) do
@@ -28,7 +28,7 @@ function cf.set_defaults_strict(trgt, src)
   end
 end
 
-function cf.process_file_default(dir, filepath, options)
+function lct.process_file_default(dir, filepath, options)
   local full_path = dir .. "/" .. filepath
   -- local prnt, filename, ext = filepath:match("^(.*/)?(.?[^/%.]+)(%..*)?$")
   -- local filename, ext = filepath:match("^(.?[^/%.]+)(%..*)?$")
@@ -81,8 +81,7 @@ function cf.process_file_default(dir, filepath, options)
       end)
     end)
 
-    
-  else  
+  else
     local file = io.open(full_path)
     local src = file:read("*a")
     file:close()
@@ -97,22 +96,22 @@ function cf.process_file_default(dir, filepath, options)
   end
 end
 
-cf.default_options = {
+lct.default_options = {
   process_src = false,
-  process_file = cf.process_file_default,
+  process_file = lct.process_file_default,
   in_dirs = false, --{"./"},
-  out_dir = "./cf_tmp",
+  out_dir = "./lct_tmp",
   exclude_dirs = {},
   in_exts = false,
   verbose = false,
   quiet = false,
 }
 
-function cf.process_files(options)
+function lct.process_files(options)
   assert(options.process_src, "process_src must be set")
   assert(options.in_dirs, "in_dirs must be set")
   assert(next(options.in_dirs), "in_dirs must be set")
-  cf.set_defaults_strict(options, cf.default_options)
+  lct.set_defaults_strict(options, lct.default_options)
   if options.verbose then print("options: " .. inspect(options)) end
 
   local dirs = {}
@@ -123,7 +122,7 @@ function cf.process_files(options)
     if options.verbose then print("mkdir -p " .. options.out_dir .. "/" .. dir) end
     os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
     -- print("dir:" .. dir)
-    
+
     for filepath in lfs.dir(dir) do
       local full_path = dir .. "/" .. filepath
       local attr = lfs.attributes(dir .. "/" .. filepath)
@@ -133,8 +132,17 @@ function cf.process_files(options)
     --   local stat = fs.stat(full_path)
     --   print(inspect(stat))
     --   local filetype = stat.type
-      print("Walking path: " .. dir .. "/" .. filepath)
-      print("filetype: " .. filetype)
+      if options.verbose then
+        print("Walking path: " .. dir .. "/" .. filepath)
+        print("filetype: " .. filetype)
+        print("filepath:" .. filepath)
+      end
+      for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
+        if dir:sub(-#d) == d then goto continue end
+      end
+      if filepath == "lock.lock" then
+        error("Directory contains file lock.lock, suggesting it's an output directory")
+      end
       if filepath ~= "." and filepath ~= ".." then
         if filetype == "file" then
           -- TODO: Use io.popen
@@ -143,8 +151,9 @@ function cf.process_files(options)
           table.insert(dirs, dir .. "/" .. filepath)
         end
       end
+      ::continue::
     end
   end
 end
 
-return cf
+return lct

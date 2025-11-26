@@ -38,26 +38,41 @@ function lct.Event:new()
   }, self)
 end
 
-function lct.Event:trigger(val)
-  assert(val ~= nil)
-  assert(self.val == nil)
-
-  self.val = val
-  local waiters = self.waiters
-  self.waiters = nil
-
-  for co in waiters do
-    coroutine.resume(co, self.val)
-  end
-end
-
 function lct.Event:await()
+  if lct.debug then print("await called") end
   if self.val == nil then
     local co = coroutine.running()
     table.insert(self.waiters, co)
     return coroutine.yield()
   else
     return self.val
+  end
+end
+
+function lct.Event:trigger(val)
+  assert(self.val == nil)
+  assert(self.waiters ~= nil)
+
+  self.val = val
+  local waiters = self.waiters
+  self.waiters = nil
+
+  for _, co in ipairs(waiters) do
+    coroutine.resume(co, self.val)
+  end
+end
+
+function lct.Event:trigger_and_invalidate(val)
+  if lct.debug then print("trigger_and_invalidate called") end
+  assert(self.val == nil)
+  assert(self.waiters ~= nil)
+
+  local waiters = self.waiters
+  self.waiters = nil
+  setmetatable(self, nil)
+
+  for _, co in ipairs(waiters) do
+    coroutine.resume(co, val)
   end
 end
 
@@ -88,7 +103,7 @@ function lct.set_defaults_strict(trgt, src)
   end
 end
 
-function lct.process_file_default(dir, filepath, options, events)
+function lct.process_file_default(dir, filepath, options, events, sync_event)
   local full_path = dir .. "/" .. filepath
   -- local prnt, filename, ext = filepath:match("^(.*/)?(.?[^/%.]+)(%..*)?$")
   -- local filename, ext = filepath:match("^(.?[^/%.]+)(%..*)?$")
@@ -143,7 +158,7 @@ function lct.process_file_default(dir, filepath, options, events)
     local file = io.open(full_path)
     local src = file:read("*a")
     file:close()
-    local out_src = options.process_src(src, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
+    local out_src = options.process_src(src, events, sync_event, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
     -- print("out:" .. out_src)
     if not out_src then return end
     local out_file, err = io.open(full_out_path, "w+")
@@ -179,6 +194,7 @@ function lct.process_files(options)
 
   local coros = {}
   local events = lct.create_events_table()
+  local sync_event = lct.Event:new()
   for _, dir in ipairs(dirs) do
     -- if options.verbose then print("mkdir -p " .. options.out_dir .. "/" .. dir) end
     -- os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
@@ -225,8 +241,12 @@ function lct.process_files(options)
     local filepath = co_obj.filepath
     local status = coroutine.status(co)
     assert(status == "suspended")
-    coroutine.resume(co, dir, filepath, options, events)
+    coroutine.resume(co, dir, filepath, options, events, sync_event)
   end
+
+  -- Trigger the syncrhonize event, but don't allow coroutines to "await" afterwards.
+  sync_event:trigger_and_invalidate()
+
   -- Check for deadlock. After resuming every coroutine once, we expect all coroutines to be finished, except if we got a deadlock.
   for filename, co_obj in pairs(coros) do
     local co = co_obj.co

@@ -74,6 +74,7 @@ parser:mutex(
   -- parser:flag "-s" "--search"
 )
 parser:flag "-p" "--no-pager"
+parser:flag "--debug"
 -- parser:flag  "--unsafe" -- Disables safety guards
 
 parser:option "-D" "--directory"
@@ -90,6 +91,7 @@ parser:argument "code" :args("?")
 
 local args = parser:parse()
 if args.verbose then print("Args: " .. inspect(args)) end
+if args.debug then lct.debug = true end
 
 local out_dir = args.output_directory or lct.default_options.out_dir
 local modified_out_dir = out_dir:gsub("[./\\]", "")
@@ -113,7 +115,7 @@ if args.gsub then
 end
 if args.lua then
   assert(args.code, "-g requires code")
-  code = [[s, args = ...; ]] .. args.code
+  code = [[s, events, sync_event, args = ...; ]] .. args.code
 end
 
 local env = {

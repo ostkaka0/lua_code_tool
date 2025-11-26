@@ -7,9 +7,69 @@ local inspect =  require "inspect"
 -- local fs = require "fs"
 local uv = require "luv"
 
+
+
 -- local USE_LUV = true
 
 local lct = {}
+
+-- Fetch username
+lct.user = os.getenv("USER") or os.getenv("USERNAME") or os.getenv("LOGNAME")
+if not lct.user then
+  error("Expected environment variable $USER, $USERNAME or $LOGNAME")
+end
+
+-- Fetch home path
+lct.home = os.getenv("HOME")
+if not lct.home then
+  error("Expected enviornment variable $HOME")
+end
+
+-- function lct.get_home_relative_path(path)
+-- end
+
+-- Events that are triggered once and can only once
+lct.Event = {}
+lct.Event.__index = lct.Event
+function lct.Event:new()
+  return setmetatable({
+    val = nil, -- nil until triggered
+    waiters = {}, -- Coroutine threads waiting on this event
+  }, self)
+end
+
+function lct.Event:trigger(val)
+  assert(val ~= nil)
+  assert(self.val == nil)
+
+  self.val = val
+  local waiters = self.waiters
+  self.waiters = nil
+
+  for co in waiters do
+    coroutine.resume(co, self.val)
+  end
+end
+
+function lct.Event:await()
+  if self.val == nil then
+    local co = coroutine.running()
+    table.insert(self.waiters, co)
+    return coroutine.yield()
+  else
+    return self.val
+  end
+end
+
+function lct.create_events_table()
+  return setmetatable({}, {
+    __index = function(events, key)
+      local e = lct.Event:new()
+      rawset(events, key, e)
+      return e
+    end
+  })
+end
 
 function lct.set_defaults(trgt, src)
   for k, v in pairs(src) do
@@ -28,14 +88,12 @@ function lct.set_defaults_strict(trgt, src)
   end
 end
 
-function lct.process_file_default(dir, filepath, options)
+function lct.process_file_default(dir, filepath, options, events)
   local full_path = dir .. "/" .. filepath
   -- local prnt, filename, ext = filepath:match("^(.*/)?(.?[^/%.]+)(%..*)?$")
   -- local filename, ext = filepath:match("^(.?[^/%.]+)(%..*)?$")
   -- local filename, ext = filepath:match("([^/%.]+)(%..*)?")
   local filename, ext = filepath:match("([^/%.]+)%.(.*)")
-  -- print(filename)
-  -- print(ext)
   if not ext then return end
   if options.in_exts and next(options.in_exts) then -- Filter by in_exts
     if not options.in_exts[ext] then return end
@@ -100,7 +158,7 @@ lct.default_options = {
   process_src = false,
   process_file = lct.process_file_default,
   in_dirs = false, --{"./"},
-  out_dir = "./lct_tmp",
+  out_dir = "/tmp/lua_code_tool/" .. lct.user .. "/",
   exclude_dirs = {},
   in_exts = false,
   verbose = false,
@@ -118,9 +176,12 @@ function lct.process_files(options)
   for i, dir in ipairs(options.in_dirs) do
     dirs[i] = dir
   end
+
+  local coros = {}
+  local events = lct.create_events_table()
   for _, dir in ipairs(dirs) do
-    if options.verbose then print("mkdir -p " .. options.out_dir .. "/" .. dir) end
-    os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
+    -- if options.verbose then print("mkdir -p " .. options.out_dir .. "/" .. dir) end
+    -- os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
     -- print("dir:" .. dir)
 
     for filepath in lfs.dir(dir) do
@@ -146,7 +207,8 @@ function lct.process_files(options)
       if filepath ~= "." and filepath ~= ".." then
         if filetype == "file" then
           -- TODO: Use io.popen
-          options.process_file(dir, filepath, options)
+          local co = coroutine.create(options.process_file)
+          coros[filepath] = {co = co, dir = dir, filepath = filepath}
         elseif filetype == "directory" then
           table.insert(dirs, dir .. "/" .. filepath)
         end
@@ -154,6 +216,23 @@ function lct.process_files(options)
       ::continue::
     end
   end
-end
+
+  -- Run all coroutines
+  -- Note, some coroutines may yield on events, but all of them should be resumed by other coroutines in the end.
+  for filename, co_obj in pairs(coros) do
+    local co = co_obj.co
+    local dir = co_obj.dir
+    local filepath = co_obj.filepath
+    local status = coroutine.status(co)
+    assert(status == "suspended")
+    coroutine.resume(co, dir, filepath, options, events)
+  end
+  -- Check for deadlock. After resuming every coroutine once, we expect all coroutines to be finished, except if we got a deadlock.
+  for filename, co_obj in pairs(coros) do
+    local co = co_obj.co
+    local status = coroutine.status(co)
+    assert(status == "dead")
+  end
+ end
 
 return lct

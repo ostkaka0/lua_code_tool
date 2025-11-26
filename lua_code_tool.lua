@@ -121,14 +121,14 @@ local env = {
   print = print
 }
 
-local lock_filename = out_dir .. "/lct.lock"
-if not args.clean then
-  os.execute("mkdir -p " .. out_dir)
-  -- print(lock_filename)
-  if file_exists(lock_filename) then
-    error("File '" .. lock_filename .. "' already exists, could not lock output directory")
-  end
-end
+-- local lock_filename = out_dir .. "/lct.lock"
+-- if not args.clean then
+--   os.execute("mkdir -p " .. out_dir)
+--   -- print(lock_filename)
+--   if file_exists(lock_filename) then
+--     error("File '" .. lock_filename .. "' already exists, could not lock output directory")
+--   end
+-- end
 
 if args.clean or (code and not args.keep) then
   local cmd = "rm -rf ./" .. out_dir
@@ -150,16 +150,16 @@ if code then
 
   -- func("LOOK HERE", {})
   -- print_func("here", {})
-  do
-    print("mkdir -p " .. out_dir)
-    os.execute("mkdir -p " .. out_dir)
-    local f = io.open(lock_filename, "w")
-    assert(f)
-    f:write("")
-    f:close()
-  end
+  -- do
+  --   print("mkdir -p " .. out_dir)
+  --   os.execute("mkdir -p " .. out_dir)
+  --   local f = io.open(lock_filename, "w")
+  --   assert(f)
+  --   f:write("")
+  --   f:close()
+  -- end
   lct.process_files({process_src = func, in_dirs = args.directory, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir})
-  os.remove(lock_filename)
+  -- os.remove(lock_filename)
 end
 os.execute('rmdir "'.. out_dir ..'" 2>/dev/null')
 

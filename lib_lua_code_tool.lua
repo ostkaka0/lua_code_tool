@@ -192,59 +192,58 @@ lct.default_options = {
   in_exts = false,
   verbose = false,
   quiet = false,
+  hidden_dirs = false,
 }
 
 function lct.process_files(options)
   assert(options.process_src, "process_src must be set")
   assert(options.in_dirs, "in_dirs must be set")
   assert(next(options.in_dirs), "in_dirs must be set")
+
   lct.set_defaults_strict(options, lct.default_options)
   if options.verbose then print("options: " .. inspect(options)) end
 
-  local dirs = {}
-  for i, dir in ipairs(options.in_dirs) do
-    dirs[i] = dir
+  -- filepaths is initialized to options.in_dirs
+  local filepaths = {}
+  for i, filepath in ipairs(options.in_dirs) do
+    filepaths[i] = filepath
   end
 
+  -- Iterate files recursively
   local coros = {}
   local events = lct.create_events_table()
   local sync_event = lct.Event:new()
-  for _, dir in ipairs(dirs) do
-    -- if options.verbose then print("mkdir -p " .. options.out_dir .. "/" .. dir) end
-    -- os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
-    -- print("dir:" .. dir)
-
-    for filename in lfs.dir(dir) do
-      local filepath = path.join(dir, filename)
-      local attr = lfs.attributes(filepath)
-      local filetype = attr.mode
-    -- for _, filepath in ipairs(fs.readdirSync(dir)) do
-    --   local filepath = dir .. "/" .. filepath
-    --   local stat = fs.stat(filepath)
-    --   print(inspect(stat))
-    --   local filetype = stat.type
-      if options.verbose then
-        print("Walking path: " .. filepath)
-        print("filetype: " .. filetype)
-        print("filename:" .. filename)
-      end
-      for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
-        if dir:sub(-#d) == d then goto continue end
-      end
-      if filename == "lock.lock" then
-        error("Directory contains file lock.lock, suggesting it's an output directory")
-      end
-      if filename ~= "." and filename ~= ".." then
-        if filetype == "file" then
-          -- TODO: Use io.popen
-          local co = coroutine.create(options.process_file)
-          coros[filepath] = {co = co}
-        elseif filetype == "directory" then
-          table.insert(dirs, filepath)
+  for _, filepath in ipairs(filepaths) do
+    local dir, filename, basename, ext = path.split(filepath)
+    local attr = lfs.attributes(filepath)
+    local filetype = attr.mode
+    if options.verbose then
+      print("Walking path: " .. filepath)
+      print("filetype: " .. filetype)
+      print("filename:" .. filename)
+    end
+    -- Exclude files
+    for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
+      if filepath:sub(-#d) == d then goto continue end
+    end
+    -- Call process_file as coroutine if filetype is file
+    if filetype == "file" then
+      -- TODO: Use io.popen
+      local co = coroutine.create(options.process_file)
+      coros[filepath] = {co = co}
+    -- Recurse if filetype is directory
+    elseif filetype == "directory" then
+      for child_filename in lfs.dir(filepath) do
+        if child_filename ~= "." and
+           child_filename ~= ".." and
+           (options.hidden_dirs or child_filename:sub(1, 1) ~= ".") -- Don't recurse through hidden directories
+        then
+          local child_filepath = path.join(filepath, child_filename)
+          table.insert(filepaths, child_filepath)
         end
       end
-      ::continue::
     end
+    ::continue::
   end
 
   -- Run all coroutines
@@ -258,8 +257,8 @@ function lct.process_files(options)
   end
 
   -- Trigger the syncrhonize event, but don't allow coroutines to "await" afterwards.
-  sync_event:trigger_and_invalidate()
 
+  sync_event:trigger_and_invalidate()
   -- Check for deadlock. After resuming every coroutine once, we expect all coroutines to be finished, except if we got a deadlock.
   for filename, co_obj in pairs(coros) do
     local co = co_obj.co

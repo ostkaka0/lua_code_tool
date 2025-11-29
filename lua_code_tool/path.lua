@@ -51,11 +51,15 @@ function path.is_absolute(p)
 end
 
 function path.join(a, b)
-  if path.is_absolute(b) then
-    return nil
+  assert(not path.is_absolute(b))
+  if     a == "." then
+    return b
+  elseif b == "." then
+    return a
+  else
+    a = a:gsub("/+$", "") -- Remove trailing /
+    return a .. "/" .. b
   end
-  a = a:gsub("/+$", "") -- Remove trailing /
-  return a .. "/" .. b
 end
 
 function path.split(p)

@@ -53,6 +53,7 @@ local parser = argparse()
   :name "lua_code_tool"
   :description "A tool for refactoring, searching and generating code."
 
+parser:flag "-a" "--all"
 parser:mutex(
   parser:flag "-v" "--verbose",
   parser:flag "-q" "--quiet"
@@ -71,6 +72,7 @@ parser:mutex(
 --   parser:flag "-l" "--lua"
 --   -- parser:flag "-s" "--search"
 -- )
+parser:flag "--no-read"
 parser:flag "-p" "--no-pager"
 parser:flag "--debug"
 -- parser:flag  "--unsafe" -- Disables safety guards
@@ -83,6 +85,7 @@ parser:option "-X" "--exclude-dir"
   :count "*"
 parser:option "-E" "--extension"
   :count "*"
+
 
 
 parser:argument "file_patterns" :args("*")
@@ -152,6 +155,7 @@ end
 -- If no code is provided, then simply print the filepaths
 if not code then
   code = "print(args.filepath)"
+  args.no_read = true
 end
 
 -- Add hidden parameters to our code
@@ -172,6 +176,8 @@ if args.clean or (code and not args.keep) then
   if args.verbose then print(cmd) end
   os.execute(cmd)
 end
+
+
 
 -- Process files with out code
 if code then
@@ -197,7 +203,7 @@ if code then
   --   f:write("")
   --   f:close()
   -- end
-  lct.process_files({process_src = func, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir})
+  lct.process_files({process_src = func, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir, hidden_dirs = args.all, no_read = args.no_read})
   -- os.remove(lock_filename)
 end
 -- Delete output-directory if empty

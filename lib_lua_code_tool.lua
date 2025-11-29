@@ -166,18 +166,19 @@ function lct.process_file_default(filepath, options, events, sync_event)
     end)
 
   else
-    local file = io.open(filepath)
-    -- print(filepath)
-    -- print(full_out_path)
-    local src = file:read("*a")
-    file:close()
+    local src = nil
+    if not options.no_read then
+      local file = io.open(filepath)
+      assert(file)
+      src = file:read("*a")
+      file:close()
+    end
+
     local out_src = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
-    -- print("out:" .. out_src)
     if not out_src then return end
     os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
     local out_file, err = io.open(full_out_path, "w+")
-    -- print(out_file)
-    -- print(err)
+    assert(out_file)
     out_file:write(out_src)
     out_file:close()
   end
@@ -193,6 +194,7 @@ lct.default_options = {
   verbose = false,
   quiet = false,
   hidden_dirs = false,
+  no_read = false,
 }
 
 -- TODO: detect duplicate filepaths

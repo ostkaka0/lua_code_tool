@@ -186,7 +186,7 @@ end
 lct.default_options = {
   process_src = false,
   process_file = lct.process_file_default,
-  in_dirs = false, --{"./"},
+  in_dirs = {"."},
   out_dir = "/tmp/lua_code_tool/" .. lct.user .. "/",
   exclude_dirs = {},
   in_exts = false,
@@ -195,13 +195,18 @@ lct.default_options = {
   hidden_dirs = false,
 }
 
+-- TODO: detect duplicate filepaths
+-- TODO: detect when a symbol link leads back to a previously iterated filepath
 function lct.process_files(options)
+  lct.set_defaults_strict(options, lct.default_options)
+  if options.verbose then print("options: " .. inspect(options)) end
+  if #options.in_dirs == 0 then
+    options.in_dirs = lct.default_options.in_dirs
+  end
+
   assert(options.process_src, "process_src must be set")
   assert(options.in_dirs, "in_dirs must be set")
   assert(next(options.in_dirs), "in_dirs must be set")
-
-  lct.set_defaults_strict(options, lct.default_options)
-  if options.verbose then print("options: " .. inspect(options)) end
 
   -- filepaths is initialized to options.in_dirs
   local filepaths = {}

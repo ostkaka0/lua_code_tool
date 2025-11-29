@@ -7,6 +7,7 @@ local inspect =  require "inspect"
 -- local fs = require "fs"
 local uv = require "luv"
 
+local path = require("lua_code_tool.path")
 
 
 -- local USE_LUV = true
@@ -58,7 +59,8 @@ function lct.Event:trigger(val)
   self.waiters = nil
 
   for _, co in ipairs(waiters) do
-    coroutine.resume(co, self.val)
+    local ok, err = coroutine.resume(co, self.val)
+    if not ok then error(err) end
   end
 end
 
@@ -72,7 +74,8 @@ function lct.Event:trigger_and_invalidate(val)
   setmetatable(self, nil)
 
   for _, co in ipairs(waiters) do
-    coroutine.resume(co, val)
+    local ok, err = coroutine.resume(co, val)
+    if not ok then error(err) end
   end
 end
 
@@ -103,50 +106,58 @@ function lct.set_defaults_strict(trgt, src)
   end
 end
 
-function lct.process_file_default(dir, filepath, options, events, sync_event)
-  local full_path = dir .. "/" .. filepath
-  -- local prnt, filename, ext = filepath:match("^(.*/)?(.?[^/%.]+)(%..*)?$")
-  -- local filename, ext = filepath:match("^(.?[^/%.]+)(%..*)?$")
-  -- local filename, ext = filepath:match("([^/%.]+)(%..*)?")
-  local filename, ext = filepath:match("([^/%.]+)%.(.*)")
-  if not ext then return end
-  if options.in_exts and next(options.in_exts) then -- Filter by in_exts
-    if not options.in_exts[ext] then return end
+function lct.filter_ext(ext, options)
+  local found = false
+  local empty = true
+  for _, e in ipairs(options.in_exts) do
+    empty = false
+    if e == ext then found = true end
   end
+  return empty or found
+end
+
+function lct.process_file_default(filepath, options, events, sync_event)
+  local dir, filename, basename, ext = path.split(filepath)
+  if not lct.filter_ext(ext, options) then return end
+  -- for k, v in pairs(options.in_exts) do print(k .. " " .. v) end 
+  -- if not ext then return end
+  -- if options.in_exts and next(options.in_exts) then -- Filter by in_exts
+  --   if not options.in_exts[ext] then return end
+  -- end
   for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
     if dir:sub(1, #d) == d then return end
   end
   if dir:sub(1, #options.out_dir) == options.our_dir then return end -- Output can't be input
-  if options.verbose then print("# " .. filepath .. ":") end
+  if options.verbose then print("# " .. filename .. ":") end
 
-  local full_out_path = options.out_dir .. "/" .. full_path
+  local full_out_path = options.out_dir .. "/" .. filepath
   -- print("out_path:" .. full_out_path)
 
   if USE_LUV then
-    -- local fd, err = uv.fs_open(full_path)
+    -- local fd, err = uv.fs_open(filepath)
     -- local stat = uv.fs_stat(fd)
     -- local src, err = uv.fs_read(fd, stat.size, 0)
     -- uv.fs_close(fd)
     -- if not src then error("Failed to read " .. fullpath) end
     write_flags = 6*64 + 4*8 + 4
     read_flags = 6*64 + 4*8 + 4
-    uv.fs_open(full_path, "r", read_flags, function(err, fd)
-      -- print("A: " .. full_path)
-      if err then error("Failed to open " .. full_path) end
+    uv.fs_open(filepath, "r", read_flags, function(err, fd)
+      -- print("A: " .. filepath)
+      if err then error("Failed to open " .. filepath) end
       uv.fs_fstat(fd, function(err, stat)
-        -- print("B: " .. full_path)
-        if err then error("fs_fstat() failed for " .. fullpath) end
+        -- print("B: " .. filepath)
+        if err then error("fs_fstat() failed for " .. filepath) end
         uv.fs_read(fd, stat.size, read_flags, function(err, src)
-          -- print("C: " .. full_path)
-          if err then error("Failed reading " .. fullpath) end
-          local out_src = options.process_src(src, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
+          -- print("C: " .. filepath)
+          if err then error("Failed reading " .. filepath) end
+          local out_src = options.process_src(src, {dir=dir, filename=filename, filepath=filepath, prnt=prnt, basename=basename, ext=ext, options=options})
           -- print("out:" .. out_src)
           if not out_src then return end
           uv.fs_open(full_out_path, "w", write_flags, function(err, out_fd)
-            -- print("D: " .. full_path)
+            -- print("D: " .. filepath)
             if err then error("fs_open() failed for " .. full_out_path) end
             uv.fs_write(out_fd, out_src, -1, function(err)
-              -- print("E: " .. full_path)
+              -- print("E: " .. filepath)
               if err then error("fs_write failed for " .. full_out_path) end
             end)
           end)
@@ -155,12 +166,15 @@ function lct.process_file_default(dir, filepath, options, events, sync_event)
     end)
 
   else
-    local file = io.open(full_path)
+    local file = io.open(filepath)
+    -- print(filepath)
+    -- print(full_out_path)
     local src = file:read("*a")
     file:close()
-    local out_src = options.process_src(src, events, sync_event, {dir=dir, filepath=filepath, full_path=full_path, prnt=prnt, filename=filename, ext=ext, options=options})
+    local out_src = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
     -- print("out:" .. out_src)
     if not out_src then return end
+    os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
     local out_file, err = io.open(full_out_path, "w+")
     -- print(out_file)
     -- print(err)
@@ -200,33 +214,33 @@ function lct.process_files(options)
     -- os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
     -- print("dir:" .. dir)
 
-    for filepath in lfs.dir(dir) do
-      local full_path = dir .. "/" .. filepath
-      local attr = lfs.attributes(dir .. "/" .. filepath)
+    for filename in lfs.dir(dir) do
+      local filepath = path.join(dir, filename)
+      local attr = lfs.attributes(filepath)
       local filetype = attr.mode
     -- for _, filepath in ipairs(fs.readdirSync(dir)) do
-    --   local full_path = dir .. "/" .. filepath
-    --   local stat = fs.stat(full_path)
+    --   local filepath = dir .. "/" .. filepath
+    --   local stat = fs.stat(filepath)
     --   print(inspect(stat))
     --   local filetype = stat.type
       if options.verbose then
-        print("Walking path: " .. dir .. "/" .. filepath)
+        print("Walking path: " .. filepath)
         print("filetype: " .. filetype)
-        print("filepath:" .. filepath)
+        print("filename:" .. filename)
       end
       for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
         if dir:sub(-#d) == d then goto continue end
       end
-      if filepath == "lock.lock" then
+      if filename == "lock.lock" then
         error("Directory contains file lock.lock, suggesting it's an output directory")
       end
-      if filepath ~= "." and filepath ~= ".." then
+      if filename ~= "." and filename ~= ".." then
         if filetype == "file" then
           -- TODO: Use io.popen
           local co = coroutine.create(options.process_file)
-          coros[filepath] = {co = co, dir = dir, filepath = filepath}
+          coros[filepath] = {co = co}
         elseif filetype == "directory" then
-          table.insert(dirs, dir .. "/" .. filepath)
+          table.insert(dirs, filepath)
         end
       end
       ::continue::
@@ -235,13 +249,12 @@ function lct.process_files(options)
 
   -- Run all coroutines
   -- Note, some coroutines may yield on events, but all of them should be resumed by other coroutines in the end.
-  for filename, co_obj in pairs(coros) do
+  for filepath, co_obj in pairs(coros) do
     local co = co_obj.co
-    local dir = co_obj.dir
-    local filepath = co_obj.filepath
     local status = coroutine.status(co)
     assert(status == "suspended")
-    coroutine.resume(co, dir, filepath, options, events, sync_event)
+    local ok, err = coroutine.resume(co, filepath, options, events, sync_event)
+    if not ok then error(err) end
   end
 
   -- Trigger the syncrhonize event, but don't allow coroutines to "await" afterwards.

@@ -50,10 +50,8 @@ local lfs = require "lfs"
 -- parser:argument("cow", "A cow eating grass")
 
 local parser = argparse()
-  :name "Codeforge"
-  :description "A tool refactoring, searching and generating code."
-
-
+  :name "lua_code_tool"
+  :description "A tool for refactoring, searching and generating code."
 
 parser:mutex(
   parser:flag "-v" "--verbose",
@@ -68,28 +66,48 @@ parser:mutex(
   parser:flag "-k" "--keep",
   parser:flag "-c" "--clean"
 )
-parser:mutex(
-  parser:flag "-g" "--gsub",
-  parser:flag "-l" "--lua"
-  -- parser:flag "-s" "--search"
-)
+-- parser:mutex(
+--   parser:flag "-g" "--gsub",
+--   parser:flag "-l" "--lua"
+--   -- parser:flag "-s" "--search"
+-- )
 parser:flag "-p" "--no-pager"
 parser:flag "--debug"
 -- parser:flag  "--unsafe" -- Disables safety guards
 
 parser:option "-D" "--directory"
   :count "*"
-parser:option "-O" "--output-directory"
-  :args(1)
+-- parser:option "-O" "--output-directory"
+--   :args(1)
 parser:option "-X" "--exclude-dir"
   :count "*"
 parser:option "-E" "--extension"
   :count "*"
 
 
-parser:argument "code" :args("?")
+parser:argument "file_patterns" :args("*")
 
-local args = parser:parse()
+-- Seperate arguments before "--" and after. Everything after "--" is input-code.
+local args_for_argparse = {}
+local parse_as_code = false
+local code = nil
+for i, a in ipairs(arg) do
+  if parse_as_code then
+    if input_code == nil then
+      code = a
+    else
+      code = code.." "..a
+    end
+  else
+    if a == "--" then
+      parse_as_code = true
+    else
+      table.insert(args_for_argparse, a)
+    end
+  end
+end
+
+local args = parser:parse(args_for_argparse)
 if args.verbose then print("Args: " .. inspect(args)) end
 if args.debug then lct.debug = true end
 
@@ -99,44 +117,63 @@ local modified_out_dir = out_dir:gsub("[./\\]", "")
 assert(#modified_out_dir > 0, "output directory is incorrect")
 if #modified_out_dir == 0 then os.exit(-1) end
 
-code = nil
-if args.gsub then
-  assert(args.code, "-g requires code")
-  code_ = args.code:gsub("\\/", "\0")
-  local A, B = code_:match("^([^/]*)/([^/]*)$")
+-- If code has no non-space-characters, then make it nil
+if code and code:match("^%s*$") then
+  code = nil
+end
+-- If we got input-code, then check if it was written with /A/ or /A/B/ pattern for search or replace(otherwise it's arbitrary lua-code).
+-- TODO: Improve our match, so we can include / characters by writing \/, because we can't!
+if code and code.sub(1, 1) == "/" then
+  -- /A/B/ pattern
+  local A, B = code_:match("^/([^/]*)/([^/]*)/$")
+  -- /A/ pattern
+  if not A then
+    A = code_:match("^/([^/]*)/$")
+  end
+  -- //A/ pattern
+  if not A then
+    B = code_:match("^//([^/]*)/$")
+  end
+  assert(A or B, "Input code starts with /, but could't interpreted as /A/B/ or /A/ or //A/")
+
+  -- Replace
   if A and B then
-    A = A:gsub("\0", "/")
-    B = B:gsub("\0", "/")
-    -- print(A)
-    -- print(B)
-    code = [[s, _ = ...; return s:gsub("]] .. A .. [[", "]] .. B .. [[")]]
-  -- else
+    code = [[return s:gsub("]] .. A .. [[", "]] .. B .. [[")]]
+  -- Search
+  elseif A then
+    code = [[return s:match("]] .. A .. [[")]]
+  -- Search but list files only
+  else
+    assert(B)
+    code = [[return s:match("]] .. A .. [[") ~= nil]]
   end
 end
-if args.lua then
-  assert(args.code, "-g requires code")
-  code = [[s, events, sync_event, args = ...; ]] .. args.code
+
+-- If no code is provided, then simply print the filepaths
+if not code then
+  code = "print(args.filepath)"
 end
 
+-- Add hidden parameters to our code
+if code then
+  code = [[s, events, sync_event, args = ...; ]] .. code
+end
+
+-- Lua environment
 local env = {
   inspect = require("inspect"),
   print = print
 }
 
--- local lock_filename = out_dir .. "/lct.lock"
--- if not args.clean then
---   os.execute("mkdir -p " .. out_dir)
---   -- print(lock_filename)
---   if file_exists(lock_filename) then
---     error("File '" .. lock_filename .. "' already exists, could not lock output directory")
---   end
--- end
-
+-- Delete previous files at output directory
 if args.clean or (code and not args.keep) then
-  local cmd = "rm -rf ./" .. out_dir
+  assert(out_dir:match("^/tmp/")) -- Only allow /tmp/ for now
+  local cmd = "rm -rf " .. out_dir
   if args.verbose then print(cmd) end
   os.execute(cmd)
 end
+
+-- Process files with out code
 if code then
   if args.verbose then print("Code: " .. code) end
   if args.verbose then print("Processing...") end
@@ -160,11 +197,16 @@ if code then
   --   f:write("")
   --   f:close()
   -- end
-  lct.process_files({process_src = func, in_dirs = args.directory, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir})
+  lct.process_files({process_src = func, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir})
   -- os.remove(lock_filename)
+end
+-- Delete output-directory if empty
+if args.verbose then
+  print('rmdir "'.. out_dir ..'" 2>/dev/null')
 end
 os.execute('rmdir "'.. out_dir ..'" 2>/dev/null')
 
+-- Show diffs
 -- if args.directory and next(args.directory) then
 --   for _, d in ipairs(args.directory) do
 --     os.execute("diff -ru --color=always " .. d .. " " .. out_dir .. "/" .. d .. " | grep -v '^Only in '")
@@ -175,9 +217,13 @@ if not args.quiet then
   if not args.no_pager then
     diff_cmd = diff_cmd .. " | less --raw-control-chars -FX"
   end
+  if args.verbose then
+    print(diff_cmd)
+  end
   os.execute("if [ -d " .. out_dir .. " ]; then\n " .. diff_cmd .. "\nfi")
 end
 
+-- Copy back to files if args.in_place, but first prompt the user.
 if args.in_place then
   local y_n = false
   while true do

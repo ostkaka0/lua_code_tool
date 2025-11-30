@@ -126,17 +126,19 @@ if code and code:match("^%s*$") then
 end
 -- If we got input-code, then check if it was written with /A/ or /A/B/ pattern for search or replace(otherwise it's arbitrary lua-code).
 -- TODO: Improve our match, so we can include / characters by writing \/, because we can't!
-if code and code.sub(1, 1) == "/" then
+if code and code:sub(1, 1) == "/" then
   -- /A/B/ pattern
-  local A, B = code_:match("^/([^/]*)/([^/]*)/$")
+  local A, B = code:match("^/([^/]*)/([^/]*)/$")
+  -- //A/ pattern
+  if A == "" then
+    A = nil
+    B = code:match("^//([^/]*)/$")
+  end
   -- /A/ pattern
   if not A then
-    A = code_:match("^/([^/]*)/$")
+    A = code:match("^/([^/]*)/$")
   end
-  -- //A/ pattern
-  if not A then
-    B = code_:match("^//([^/]*)/$")
-  end
+  
   assert(A or B, "Input code starts with /, but could't interpreted as /A/B/ or /A/ or //A/")
 
   -- Replace
@@ -144,11 +146,11 @@ if code and code.sub(1, 1) == "/" then
     code = [[return s:gsub("]] .. A .. [[", "]] .. B .. [[")]]
   -- Search
   elseif A then
-    code = [[return s:match("]] .. A .. [[")]]
+    code = [[return s:gmatch("()]] .. A .. [[()")]]
   -- Search but list files only
   else
     assert(B)
-    code = [[return s:match("]] .. A .. [[") ~= nil]]
+    code = [[return s:gmatch("]] .. B .. [[") ~= nil]]
   end
 end
 

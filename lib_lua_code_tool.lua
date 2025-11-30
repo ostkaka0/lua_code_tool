@@ -116,7 +116,7 @@ function lct.filter_ext(ext, options)
   return empty or found
 end
 
-function lct.process_file_default(filepath, options, events, sync_event)
+function lct.process_file_default(filepath, options, events, sync_event, return_type)
   local dir, filename, basename, ext = path.split(filepath)
   if not lct.filter_ext(ext, options) then return end
   -- for k, v in pairs(options.in_exts) do print(k .. " " .. v) end 
@@ -174,13 +174,94 @@ function lct.process_file_default(filepath, options, events, sync_event)
       file:close()
     end
 
-    local out_src = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
-    if not out_src then return end
-    os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
-    local out_file, err = io.open(full_out_path, "w+")
-    assert(out_file)
-    out_file:write(out_src)
-    out_file:close()
+    local out_val = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
+    if out_val == nil then return end
+    if return_type.val == nil then
+      return_type.val = type(out_val)
+    else
+      -- We assert that the code return an object with the same type for each file. Either string, bool or function(iterator), except nil is ignored.
+      assert(type(out_val) == return_type.val)
+    end
+
+    if type(out_val) == "string" then
+      local out_src = out_val
+      os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
+      local out_file, err = io.open(full_out_path, "w+")
+      assert(out_file)
+      out_file:write(out_src)
+      out_file:close()
+    elseif type(out_val) == "boolean" then
+      if out_val == true then
+        print(filepath)
+      end
+    elseif type(out_val) == "function" then
+      -- The code returned search results in the form of an iterator
+      local line_offsets = {}
+      local lines = {}
+      for offset, line in src:gmatch("()([^\n]*)\n?") do
+        table.insert(line_offsets, offset)
+        table.insert(lines, line)
+      end
+
+      local prev_a = 0
+      local prev_b = -1
+      local line_num = 0
+      local line_offset = 0
+      for a, b in out_val do
+        if a == nil or b == nil then break end
+        a = a
+        b = b - 1
+        local match_str = src:sub(a, b)
+
+        assert(a ~= nil and b ~= nil)
+        assert(a >= prev_a)
+        if a == prev_a then
+          assert(b > prev_b)
+        end
+
+        -- Loop until we find the correct line number
+        while true do
+          local next_line_offset = line_offsets[line_num + 1]
+          if next_line_offset == nil then break end
+          if next_line_offset > a then break end
+          line_num = line_num + 1
+          line_offset = next_line_offset
+        end
+        -- Calc line count of match
+        local line_cnt = 1
+        for _ in match_str:gmatch("\n") do
+          line_cnt = line_cnt + 1
+        end
+        -- print("match:")
+        -- print(match_str)
+        -- print("line_cnt is "..line_cnt)
+        -- Calculate the column
+        local col = a - line_offset + 1
+
+        -- We can now finally print the search result
+        print()
+        print(filepath .. ":" .. line_num .. ":" .. col)
+        for i = line_num, line_num + line_cnt - 1 do
+          local line = lines[i]
+          if line == nil then break end
+          io.write("    ")
+          io.write(line)
+          io.write("\n")
+          io.write("    ")
+          for j = 1, #line do
+            if line_offsets[i] + j <= a then
+              io.write(" ")
+            elseif line_offsets[i] + j <= b + 1 then
+              io.write("‾")
+            end
+          end
+          io.write("\n")
+        end
+
+        prev_a = a
+        prev_b = b
+      end
+    end
   end
 end
 
@@ -216,8 +297,9 @@ function lct.process_files(options)
     filepaths[i] = filepath
   end
 
-  -- Iterate files recursively
   local coros = {}
+  local return_type = {val = nil}
+  -- Iterate files recursively
   local events = lct.create_events_table()
   local sync_event = lct.Event:new()
   for _, filepath in ipairs(filepaths) do
@@ -259,7 +341,7 @@ function lct.process_files(options)
     local co = co_obj.co
     local status = coroutine.status(co)
     assert(status == "suspended")
-    local ok, err = coroutine.resume(co, filepath, options, events, sync_event)
+    local ok, err = coroutine.resume(co, filepath, options, events, sync_event, return_type)
     if not ok then error(err) end
   end
 

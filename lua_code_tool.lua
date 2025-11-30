@@ -160,10 +160,7 @@ if not code then
   args.no_read = true
 end
 
--- Add hidden parameters to our code
-if code then
-  code = [[s, events, sync_event, args = ...; ]] .. code
-end
+
 
 -- Lua environment
 local env = {
@@ -171,25 +168,40 @@ local env = {
   print = print
 }
 
--- Delete previous files at output directory
-if args.clean or (code and not args.keep) then
-  assert(out_dir:match("^/tmp/")) -- Only allow /tmp/ for now
-  local cmd = "rm -rf " .. out_dir
-  if args.verbose then print(cmd) end
-  os.execute(cmd)
+-- Check if code is fennel
+local use_fennel = false
+if code and code:sub(1, 1) == "(" and code:sub(-1, -1) == ")" then
+  use_fennel = true
 end
 
+-- Translate fennel to lua
+if code and use_fennel then
+  local fennel = require("fennel")
+  -- table.insert(package.loaders or package.searchers, fennel.searcher)
 
+  local fennel_code = code:sub(2, -2)
+  code = fennel.compileString(fennel_code)
+  if args.verbose then
+    print("Fennel code:")
+    print(fennel_code)
+    print("Transpiled lua code:")
+    print(code)
+  end
+end
 
--- Process files with out code
+-- Add hidden parameters to our code
 if code then
+  code = [[s, events, sync_event, args = ...; ]] .. code
+end
+
+-- Load the code
+local func = nil
+if code then
+  local err = nil
   if args.verbose then print("Code: " .. code) end
   if args.verbose then print("Processing...") end
-  local func, err = load(code, "chunk", "t", env)
-  assert(err == nil)
-  -- print(func)
-  -- print(err)
-  -- print("lct: " .. inspect(lct))
+  func, err = load(code, "chunk", "t", env)
+  if err then error(err) end
 
   local function print_func(_, _)
     print('HELLO from print_func')
@@ -205,9 +217,22 @@ if code then
   --   f:write("")
   --   f:close()
   -- end
+end
+
+-- Delete previous files at output directory
+if args.clean or (code and not args.keep) then
+  assert(out_dir:match("^/tmp/")) -- Only allow /tmp/ for now
+  local cmd = "rm -rf " .. out_dir
+  if args.verbose then print(cmd) end
+  os.execute(cmd)
+end
+
+-- Process files with out code
+if code then
   lct.process_files({process_src = func, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir, hidden_dirs = args.all, no_read = args.no_read})
   -- os.remove(lock_filename)
 end
+
 -- Delete output-directory if empty
 if args.verbose then
   print('rmdir "'.. out_dir ..'" 2>/dev/null')

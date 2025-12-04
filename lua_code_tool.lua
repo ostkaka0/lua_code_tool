@@ -278,7 +278,7 @@ if args.in_place then
     end
   end
   if y_n then
-    local cp_cmd = "cp -r " .. out_dir .. " ./funny_dir/"
+    local cp_cmd = "cp -r " .. out_dir .. "/. ./"
     if args.verbose then print(cp_cmd) end
     os.execute(cp_cmd)
   end

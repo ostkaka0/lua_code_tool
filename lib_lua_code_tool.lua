@@ -60,7 +60,7 @@ function lct.Event:trigger(val)
 
   for _, co in ipairs(waiters) do
     local ok, err = coroutine.resume(co, self.val)
-    if not ok then error(err) end
+    if not ok then error(debug.traceback(co, err), 2) end
   end
 end
 
@@ -75,7 +75,7 @@ function lct.Event:trigger_and_invalidate(val)
 
   for _, co in ipairs(waiters) do
     local ok, err = coroutine.resume(co, val)
-    if not ok then error(err) end
+    if not ok then error(debug.traceback(co, err), 2) end
   end
 end
 
@@ -109,6 +109,7 @@ end
 function lct.filter_ext(ext, options)
   local found = false
   local empty = true
+  if not options.in_exts then return true end
   for _, e in ipairs(options.in_exts) do
     empty = false
     if e == ext then found = true end
@@ -342,7 +343,7 @@ function lct.process_files(options)
     local status = coroutine.status(co)
     assert(status == "suspended")
     local ok, err = coroutine.resume(co, filepath, options, events, sync_event, return_type)
-    if not ok then error(err) end
+    if not ok then error(debug.traceback(co, err), 2) end
   end
 
   -- Trigger the syncrhonize event, but don't allow coroutines to "await" afterwards.

@@ -27,34 +27,36 @@ end
 
 local lct = {} -- Exported module
 
--- path ------------------------------------------------------------------------
-local path = {} -- path "submodule"
-lct.path = path
+--------------------------------------------------------------------------------
+-- Path
+--------------------------------------------------------------------------------
+local Path = {} -- path "submodule"
+lct.Path = Path
 -- Note that the first / on a full path will not become a part.
-function path.to_parts(p)
+function Path.to_parts(p)
   return p:gmatch("[^/]+")
 end
-function path.to_parts_arr(p)
+function Path.to_parts_arr(p)
   local parts = {}
-  for part in path.to_parts(p) do
+  for part in Path.to_parts(p) do
     table.insert(parts, part)
   end
   return parts
 end
 
 -- Normalize path, note because we don't convert to full path, we may get a few leading "..". There is a special case for leading ".." when the path was a full path, then we get a "/" and a number of "..", this is an invalid path, but is the best we can do, anyways the path will be unusable and always result in an error somewhere, since the os won't let us open any file ever with such paths.
-function path.normalize(p)
+function Path.normalize(p)
   -- Use / instead of \
   p = p:gsub("\\", "/")
   -- Split path into parts, remove previous part when "..", do't insert for ".".
   local parts = {} -- The first few parts can all be "..", but the rest must be neither "." or "..".
   local depth = 0 -- length of parts excluding initial ".." as well as an "/" if we had a full path.
-  if path.is_full(p) then
+  if Path.is_full(p) then
     parts.insert("/")
   end
-  for part in path.to_parts(p) do
+  for part in Path.to_parts(p) do
     if part == "~" and #parts == 0 then
-      table.insert(parts, "~") -- TODO: perhaps implement a path.get_first or split_root. This code would then be simplified away.
+      table.insert(parts, "~") -- TODO: perhaps implement a Path.get_first or split_root. This code would then be simplified away.
     elseif part == ".." then
       if depth == 0 then
         table.insert(parts, "..")
@@ -78,12 +80,12 @@ function path.normalize(p)
   return r
 end
 
-function path.is_absolute(p)
+function Path.is_absolute(p)
   return p:match("^[/\\]") or p:match("^%w:[/\\]") or p:match("^\\\\")
 end
 
-function path.join(a, b)
-  assert(not path.is_absolute(b))
+function Path.join(a, b)
+  assert(not Path.is_absolute(b))
   if     a == "." then
     return b
   elseif b == "." then
@@ -94,7 +96,7 @@ function path.join(a, b)
   end
 end
 
-function path.split(p)
+function Path.split(p)
   local dir, filename = p:match("^(.-)([^/\\]*)$")
   local basename, ext = filename:match("^(.-)(%.[^%.]*)$")
   if basename then
@@ -105,42 +107,42 @@ function path.split(p)
 end
 
 
-function path.is_full(p)
+function Path.is_full(p)
   return p:match("^[/\\]") or p:match("^[a-zA-Z]%:[/\\]")
 end
 
-function path.user_home()
+function Path.user_home()
   return os.getenv("HOME")
 end
 
-function path.current_dir()
+function Path.current_dir()
   lfs.currentdir()
 end
 
-function path.full(p)
-  if not path.is_full(p) then
+function Path.full(p)
+  if not Path.is_full(p) then
     if p:sub(1, 1) == "~" then
-      p = path.join(path.user_home(), p:sub(2))
+      p = Path.join(Path.user_home(), p:sub(2))
     else
-      p = path.join(path.current_dir(), p)
+      p = Path.join(Path.current_dir(), p)
     end
   end
-  return path.normalize(p)
+  return Path.normalize(p)
 end
 
 -- shortcut_map is a map with normalized input path-patterns for keys, and and shortcuts for values(may use captures). Only alternative paths with less parts may be picked.
-function path.choose_best_shortcut(p, shortcut_map)
+function Path.choose_best_shortcut(p, shortcut_map)
   print("sdfsdfdsf")
   print(inspect(shortcut_map))
   local best_p = p
-  local best_p_part_cnt = #path.to_parts_arr(p)
+  local best_p_part_cnt = #Path.to_parts_arr(p)
   for k, v in pairs(shortcut_map) do
     print("key")
     print(k)
     print("val")
     print(v)
     local new_p = p:gsub(k, v)
-    local new_p_part_cnt = #path.to_parts_arr(new_p)
+    local new_p_part_cnt = #Path.to_parts_arr(new_p)
     if new_p_part_cnt < best_p_part_cnt then
       best_p = new_p
       best_p_part_cnt = new_p_part_cnt
@@ -149,30 +151,32 @@ function path.choose_best_shortcut(p, shortcut_map)
   return best_p
 end
 
-function path.first_part(p)
-  local parts = path.to_parts_arr(p)
+function Path.first_part(p)
+  local parts = Path.to_parts_arr(p)
   local num_parts = #parts
   assert(num_parts > 0)
   return parts[1]
 end
 
-function path.last_part(p)
+function Path.last_part(p)
   print(p)
-  local parts = path.to_parts_arr(p)
+  local parts = Path.to_parts_arr(p)
   local num_parts = #parts
   assert(num_parts > 0)
   return parts[num_parts]
 end
 
-function path.get_home()
+function Path.get_home()
   local home = os.getenv("HOME")
   if not home then
     error("Expected enviornment variable $HOME")
   end
   return home
 end
---------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+-- Event
+--------------------------------------------------------------------------------
 -- Events that are triggered once and can only once
 lct.Event = {}
 lct.Event.__index = lct.Event
@@ -232,6 +236,7 @@ function lct.create_events_table()
     end
   })
 end
+--------------------------------------------------------------------------------
 
 function lct.set_defaults(trgt, src)
   for k, v in pairs(src) do
@@ -262,7 +267,7 @@ function lct.filter_ext(ext, options)
 end
 
 function lct.process_file_default(filepath, options, events, sync_event, return_type)
-  local dir, filename, basename, ext = path.split(filepath)
+  local dir, filename, basename, ext = Path.split(filepath)
   if not lct.filter_ext(ext, options) then return end
   -- for k, v in pairs(options.in_exts) do print(k .. " " .. v) end 
   -- if not ext then return end
@@ -414,7 +419,7 @@ lct.default_options = {
   process_src = false,
   process_file = lct.process_file_default,
   in_dirs = {"."},
-  out_dir = "/tmp/lua_code_tool/" .. path.last_part(path.get_home()) .. "/",
+  out_dir = "/tmp/lua_code_tool/" .. Path.last_part(Path.get_home()) .. "/",
   exclude_dirs = {},
   in_exts = false,
   verbose = false,
@@ -448,7 +453,7 @@ function lct.process_files(options)
   local events = lct.create_events_table()
   local sync_event = lct.Event:new()
   for _, filepath in ipairs(filepaths) do
-    local dir, filename, basename, ext = path.split(filepath)
+    local dir, filename, basename, ext = Path.split(filepath)
     local attr = lfs.attributes(filepath)
     local filetype = attr.mode
     if options.verbose then
@@ -472,7 +477,7 @@ function lct.process_files(options)
            child_filename ~= ".." and
            (options.hidden_dirs or child_filename:sub(1, 1) ~= ".") -- Don't recurse through hidden directories
         then
-          local child_filepath = path.join(filepath, child_filename)
+          local child_filepath = Path.join(filepath, child_filename)
           table.insert(filepaths, child_filepath)
         end
       end
@@ -501,7 +506,11 @@ function lct.process_files(options)
   end
  end
 
-local function main()
+--------------------------------------------------------------------------------
+-- main-code
+--------------------------------------------------------------------------------
+local is_main_file = not pcall(debug.getlocal, 4, 1)
+if is_main_file then
   local argparse = require("argparse")
 
   local parser = argparse()
@@ -738,9 +747,6 @@ local function main()
   end
 end
 
-local is_main_file = not pcall(debug.getlocal, 4, 1)
-if is_main_file then
-  main()
-end
+
 
 return lct

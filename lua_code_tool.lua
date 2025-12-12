@@ -251,7 +251,7 @@ function Utils.set_defaults(trgt, src)
 end
 
 function Utils.set_defaults_strict(trgt, src)
-  lct.set_defaults(trgt, src)
+  Utils.set_defaults(trgt, src)
   -- print(inspect(src))
   -- print(inspect(trgt))
   for k, _ in pairs(trgt) do
@@ -275,7 +275,7 @@ end
 
 function lct.process_file_default(filepath, options, events, sync_event, return_type)
   local dir, filename, basename, ext = Path.split(filepath)
-  if not lct.filter_ext(ext, options) then return end
+  if not Utils.filter_ext(ext, options) then return end
   -- for k, v in pairs(options.in_exts) do print(k .. " " .. v) end 
   -- if not ext then return end
   -- if options.in_exts and next(options.in_exts) then -- Filter by in_exts
@@ -438,7 +438,7 @@ lct.default_options = {
 -- TODO: detect duplicate filepaths
 -- TODO: detect when a symbol link leads back to a previously iterated filepath
 function lct.process_files(options)
-  lct.set_defaults_strict(options, lct.default_options)
+  Utils.set_defaults_strict(options, lct.default_options)
   if options.verbose then print("options: " .. inspect(options)) end
   if #options.in_dirs == 0 then
     options.in_dirs = lct.default_options.in_dirs

@@ -32,7 +32,14 @@ local path = {} -- path "submodule"
 lct.path = path
 -- Note that the first / on a full path will not become a part.
 function path.to_parts(p)
-  return p:gmatch("[^/]")
+  return p:gmatch("[^/]+")
+end
+function path.to_parts_arr(p)
+  local parts = {}
+  for part in path.to_parts(p) do
+    table.insert(parts, part)
+  end
+  return parts
 end
 
 -- Normalize path, note because we don't convert to full path, we may get a few leading "..". There is a special case for leading ".." when the path was a full path, then we get a "/" and a number of "..", this is an invalid path, but is the best we can do, anyways the path will be unusable and always result in an error somewhere, since the os won't let us open any file ever with such paths.
@@ -126,14 +133,14 @@ function path.choose_best_shortcut(p, shortcut_map)
   print("sdfsdfdsf")
   print(inspect(shortcut_map))
   local best_p = p
-  local best_p_part_cnt = #path.to_parts(p)
+  local best_p_part_cnt = #path.to_parts_arr(p)
   for k, v in pairs(shortcut_map) do
     print("key")
     print(k)
     print("val")
     print(v)
     local new_p = p:gsub(k, v)
-    local new_p_part_cnt = #path.to_parts(new_p)
+    local new_p_part_cnt = #path.to_parts_arr(new_p)
     if new_p_part_cnt < best_p_part_cnt then
       best_p = new_p
       best_p_part_cnt = new_p_part_cnt
@@ -141,19 +148,30 @@ function path.choose_best_shortcut(p, shortcut_map)
   end
   return best_p
 end
+
+function path.first_part(p)
+  local parts = path.to_parts_arr(p)
+  local num_parts = #parts
+  assert(num_parts > 0)
+  return parts[1]
+end
+
+function path.last_part(p)
+  print(p)
+  local parts = path.to_parts_arr(p)
+  local num_parts = #parts
+  assert(num_parts > 0)
+  return parts[num_parts]
+end
+
+function path.get_home()
+  local home = os.getenv("HOME")
+  if not home then
+    error("Expected enviornment variable $HOME")
+  end
+  return home
+end
 --------------------------------------------------------------------------------
-
--- Fetch username
-lct.user = os.getenv("USER") or os.getenv("USERNAME") or os.getenv("LOGNAME")
-if not lct.user then
-  error("Expected environment variable $USER, $USERNAME or $LOGNAME")
-end
-
--- Fetch home path
-lct.home = os.getenv("HOME")
-if not lct.home then
-  error("Expected enviornment variable $HOME")
-end
 
 -- Events that are triggered once and can only once
 lct.Event = {}
@@ -396,7 +414,7 @@ lct.default_options = {
   process_src = false,
   process_file = lct.process_file_default,
   in_dirs = {"."},
-  out_dir = "/tmp/lua_code_tool/" .. lct.user .. "/",
+  out_dir = "/tmp/lua_code_tool/" .. path.last_part(path.get_home()) .. "/",
   exclude_dirs = {},
   in_exts = false,
   verbose = false,

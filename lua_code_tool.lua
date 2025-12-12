@@ -237,8 +237,12 @@ function lct.create_events_table()
   })
 end
 --------------------------------------------------------------------------------
+-- Utils
+--------------------------------------------------------------------------------
+local Utils = {}
+lct.Utils = Utils
 
-function lct.set_defaults(trgt, src)
+function Utils.set_defaults(trgt, src)
   for k, v in pairs(src) do
     if trgt[k] == nil then
       trgt[k] = v
@@ -246,7 +250,7 @@ function lct.set_defaults(trgt, src)
   end
 end
 
-function lct.set_defaults_strict(trgt, src)
+function Utils.set_defaults_strict(trgt, src)
   lct.set_defaults(trgt, src)
   -- print(inspect(src))
   -- print(inspect(trgt))
@@ -255,7 +259,7 @@ function lct.set_defaults_strict(trgt, src)
   end
 end
 
-function lct.filter_ext(ext, options)
+function Utils.filter_ext(ext, options)
   local found = false
   local empty = true
   if not options.in_exts then return true end
@@ -265,6 +269,9 @@ function lct.filter_ext(ext, options)
   end
   return empty or found
 end
+--------------------------------------------------------------------------------
+-- Main module
+--------------------------------------------------------------------------------
 
 function lct.process_file_default(filepath, options, events, sync_event, return_type)
   local dir, filename, basename, ext = Path.split(filepath)
@@ -506,6 +513,9 @@ function lct.process_files(options)
   end
  end
 
+--------------------------------------------------------------------------------
+-- Program
+--------------------------------------------------------------------------------
 local function parse_args()
   local argparse = require("argparse")
   local parser = argparse()
@@ -757,7 +767,5 @@ if is_main_file then
     end
   end
 end
-
-
 
 return lct

@@ -2,15 +2,22 @@
 -- Author: John Emanuelsson
 -- File created 2025-04-05 15:46:33 CEST
 
+
+-- local USE_LUV = true
+
 local lfs = require "lfs"
 local inspect =  require "inspect"
 -- local fs = require "fs"
-local uv = require "luv"
+local uv
+---@diagnostic disable: undefined-global
+if USE_LUV then
+  uv = require "luv"
+end
 
 local path = require("lua_code_tool.path")
 
 
--- local USE_LUV = true
+
 
 local lct = {}
 

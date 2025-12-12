@@ -506,13 +506,8 @@ function lct.process_files(options)
   end
  end
 
---------------------------------------------------------------------------------
--- main-code
---------------------------------------------------------------------------------
-local is_main_file = not pcall(debug.getlocal, 4, 1)
-if is_main_file then
+local function parse_args()
   local argparse = require("argparse")
-
   local parser = argparse()
     :name "lua_code_tool"
     :description "A tool for refactoring, searching and generating code."
@@ -550,8 +545,6 @@ if is_main_file then
   parser:option "-E" "--extension"
     :count "*"
 
-
-
   parser:argument "file_patterns" :args("*")
 
   -- Seperate arguments before "--" and after. Everything after "--" is input-code.
@@ -575,15 +568,10 @@ if is_main_file then
   end
 
   local args = parser:parse(args_for_argparse)
-  if args.verbose then print("Args: " .. inspect(args)) end
-  if args.debug then lct.debug = true end
+  return args, code
+end
 
-  local out_dir = args.output_directory or lct.default_options.out_dir
-  local modified_out_dir = out_dir:gsub("[./\\]", "")
-  -- print("here: " .. modified_out_dir)
-  assert(#modified_out_dir > 0, "output directory is incorrect")
-  if #modified_out_dir == 0 then os.exit(-1) end
-
+local function interpret_code_str(code)
   -- If code has no non-space-characters, then make it nil
   if code and code:match("^%s*$") then
     code = nil
@@ -617,13 +605,10 @@ if is_main_file then
       code = [[return s:gmatch("]] .. B .. [[") ~= nil]]
     end
   end
+  return code
+end
 
-  -- If no code is provided, then simply print the filepaths
-  if not code then
-    code = "print(args.filepath)"
-    args.no_read = true
-  end
-
+local function load_code(code, args)
   -- Lua environment
   local env = {
     inspect = require("inspect"),
@@ -680,6 +665,32 @@ if is_main_file then
     --   f:close()
     -- end
   end
+  return func
+end
+
+--------------------------------------------------------------------------------
+-- main-code
+--------------------------------------------------------------------------------
+local is_main_file = not pcall(debug.getlocal, 4, 1)
+if is_main_file then
+  local args, code_str = parse_args()
+  if args.verbose then print("Args: " .. inspect(args)) end
+  if args.debug then lct.debug = true end
+
+  local out_dir = args.output_directory or lct.default_options.out_dir
+  local modified_out_dir = out_dir:gsub("[./\\]", "")
+  -- print("here: " .. modified_out_dir)
+  assert(#modified_out_dir > 0, "output directory is incorrect")
+  if #modified_out_dir == 0 then os.exit(-1) end
+
+  local code = interpret_code_str(code_str)
+  -- If no code is provided, then simply print the filepaths
+  if not code then
+    code = "print(args.filepath)"
+    args.no_read = true
+  end
+
+  local func = load_code(code, args)
 
   -- Delete previous files at output directory
   if args.clean or (code and not args.keep) then

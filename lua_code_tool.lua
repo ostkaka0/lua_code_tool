@@ -17,7 +17,7 @@
 -- local USE_LUV = true
 
 local lfs = require "lfs"
-local inspect =  require "inspect"
+inspect =  require "inspect"
 -- local fs = require "fs"
 local uv
 ---@diagnostic disable: undefined-global
@@ -52,7 +52,7 @@ function Path.normalize(p)
   local parts = {} -- The first few parts can all be "..", but the rest must be neither "." or "..".
   local depth = 0 -- length of parts excluding initial ".." as well as an "/" if we had a full path.
   if Path.is_full(p) then
-    parts.insert("/")
+    table.insert(parts, "/")
   end
   for part in Path.to_parts(p) do
     if part == "~" and #parts == 0 then
@@ -72,7 +72,7 @@ function Path.normalize(p)
   -- Merge parts into a path
   local r = ""
   for i, part in ipairs(parts) do
-    if i ~= 0 then
+    if i > 1 and r:sub(-1) ~= "/" then
       r = r .. "/"
     end
     r = r .. part
@@ -116,7 +116,7 @@ function Path.user_home()
 end
 
 function Path.current_dir()
-  lfs.currentdir()
+  return lfs.currentdir()
 end
 
 function Path.full(p)
@@ -269,10 +269,47 @@ function Utils.filter_ext(ext, options)
   end
   return empty or found
 end
---------------------------------------------------------------------------------
--- Main module
---------------------------------------------------------------------------------
 
+function Utils.await(async_func, ...)
+  local co = coroutine.running()
+  local resumed = false
+  local yielded = false
+  local r = nil
+  -- print("Utils.await")
+  assert(co)
+  -- print(inspect(async_func))
+  local args = {...}
+  -- print("args:")
+  -- print(inspect(args))
+
+  table.insert(args, function(...)
+    if yielded then
+      -- print("YIELDED")
+      -- print(...)
+      local ok, err = coroutine.resume(co, ...)
+      if not ok then error(debug.traceback(co, err), 2) end
+    end
+    -- print("NOT YIELDED")
+    -- print(...)
+    resumed = true
+    r = ...
+  end)
+  -- print("args with callback:")
+  -- print(inspect(args))
+  async_func(table.unpack(args))
+  if resumed then
+    -- print("IMMEDIATE RETURN")
+    return r
+  else
+    yielded = true
+    -- print("YIELDING")
+    return coroutine.yield()
+  end
+end
+
+--------------------------------------------------------------------------------
+-- lct
+--------------------------------------------------------------------------------
 function lct.process_file_default(filepath, options, events, sync_event, return_type)
   local dir, filename, basename, ext = Path.split(filepath)
   if not Utils.filter_ext(ext, options) then return end
@@ -284,140 +321,192 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
   for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
     if dir:sub(1, #d) == d then return end
   end
-  if dir:sub(1, #options.out_dir) == options.our_dir then return end -- Output can't be input
+  if dir:sub(1, #options.out_dir) == options.out_dir then return end -- Output can't be input
   if options.verbose then print("# " .. filename .. ":") end
 
   local full_out_path = options.out_dir .. "/" .. filepath
   -- print("out_path:" .. full_out_path)
 
-  if USE_LUV then
-    -- local fd, err = uv.fs_open(filepath)
-    -- local stat = uv.fs_stat(fd)
-    -- local src, err = uv.fs_read(fd, stat.size, 0)
-    -- uv.fs_close(fd)
-    -- if not src then error("Failed to read " .. fullpath) end
-    local write_flags = 6*64 + 4*8 + 4
-    local read_flags = 6*64 + 4*8 + 4
-    uv.fs_open(filepath, "r", read_flags, function(err, fd)
-      -- print("A: " .. filepath)
-      if err then error("Failed to open " .. filepath) end
-      uv.fs_fstat(fd, function(err, stat)
-        -- print("B: " .. filepath)
-        if err then error("fs_fstat() failed for " .. filepath) end
-        uv.fs_read(fd, stat.size, read_flags, function(err, src)
-          -- print("C: " .. filepath)
-          if err then error("Failed reading " .. filepath) end
-          local out_src = options.process_src(src, {dir=dir, filename=filename, filepath=filepath, prnt=prnt, basename=basename, ext=ext, options=options})
-          -- print("out:" .. out_src)
-          if not out_src then return end
-          uv.fs_open(full_out_path, "w", write_flags, function(err, out_fd)
-            -- print("D: " .. filepath)
-            if err then error("fs_open() failed for " .. full_out_path) end
-            uv.fs_write(out_fd, out_src, -1, function(err)
-              -- print("E: " .. filepath)
-              if err then error("fs_write failed for " .. full_out_path) end
-            end)
-          end)
-        end)
-      end)
-    end)
-
-  else
-    local src = nil
-    if not options.no_read then
-      local file = io.open(filepath)
-      assert(file)
-      src = file:read("*a")
-      file:close()
-    end
-
-    local out_val = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
-    if out_val == nil then return end
-    if return_type.val == nil then
-      return_type.val = type(out_val)
+  local src = nil
+  if not options.no_read then
+    if not USE_LUV then
+      local fd = io.open(filepath)
+      assert(fd)
+      src = fd:read("*a")
+      fd:close()
     else
-      -- We assert that the code return an object with the same type for each file. Either string, bool or function(iterator), except nil is ignored.
-      assert(type(out_val) == return_type.val)
-    end
+      local co = coroutine.running()
+      assert(co)
 
-    if type(out_val) == "string" then
-      local out_src = out_val
+      -- local fd, err = uv.fs_open(filepath)
+      -- local stat = uv.fs_stat(fd)
+      -- local src, err = uv.fs_read(fd, stat.size, 0)
+      -- uv.fs_close(fd)
+      -- if not src then error("Failed to read " .. fullpath) end
+
+      local read_mode = 6*64 + 4*8 + 4
+      local err, fd, stat = nil, nil, nil
+
+      -- print("filepath:"..filepath)
+      uv.fs_open(filepath, "r", read_mode, function(...)
+        -- print("fs_open of "..filepath)
+        -- print(inspect({...}))
+        coroutine.resume(co, ...)
+      end)
+      err, fd = coroutine.yield()
+      -- print("fd:"..fd)
+      if err then error("Failed to open " .. filepath) end
+      assert(fd)
+      -- print("A: " .. filepath)
+
+      uv.fs_fstat(fd, function(...)
+        -- print("fs_stat of "..filepath)
+        -- print(inspect({...}))
+        coroutine.resume(co, ...)
+      end)
+      err, stat = coroutine.yield()
+      if err then error("fs_fstat() failed for " .. filepath) end
+      assert(stat)
+      -- print("B: " .. filepath .. ", size:"..stat.size)
+
+      uv.fs_read(fd, stat.size, 0, function(...)
+        -- print("fs_read of "..filepath)
+        -- print(inspect({...}))
+        coroutine.resume(co, ...)
+      end)
+      err, src = coroutine.yield()
+      if err then error("Failed reading " .. filepath) end
+      assert(src)
+      -- print("C: " .. filepath)
+
+      uv.fs_close(fd)
+
+      -- print("src is")
+      -- print(src)
+
+      -- local out_src = options.process_src(src, {dir=dir, filename=filename, filepath=filepath, prnt=prnt, basename=basename, ext=ext, options=options})
+      -- -- print("out:" .. out_src)
+      -- if not out_src then return end
+
+      -- uv.fs_open(full_out_path, "w", write_mode, function(err, out_fd)
+      --   -- print("D: " .. filepath)
+      --   if err then error("fs_open() failed for " .. full_out_path) end
+      --   uv.fs_write(out_fd, out_src, -1, function(err)
+      --     -- print("E: " .. filepath)
+      --     if err then error("fs_write failed for " .. full_out_path) end
+      --   end)
+      -- end)
+    end
+  end
+
+  local out_val = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
+  if out_val == nil then return end
+  if return_type.val == nil then
+    return_type.val = type(out_val)
+  else
+    -- We assert that the code return an object with the same type for each file. Either string, bool or function(iterator), except nil is ignored.
+    assert(type(out_val) == return_type.val)
+  end
+
+  if type(out_val) == "string" then -- Write to file
+    local out_src = out_val
+    local parent_dir = Path.join(options.out_dir, dir)
+    if USE_LUV then
+      -- print("MOO")
+      local write_mode = 6*64 + 4*8 + 4 -- 644
+      local dir_mode = 7*64 + 5*8 + 5 -- 755
+      local err, fd = nil, nil
+
+      err = Utils.await(uv.fs_mkdir, parent_dir, dir_mode)
+      -- if err then error("fs_mkdir() failed for " .. parent_dir) end
+      -- print("D: " .. parent_dir)
+
+      err, fd = Utils.await(uv.fs_open, full_out_path, "w", write_mode)
+      if err then error("fs_open() failed for " .. full_out_path) end
+      -- print("E: " .. filepath)
+
+      err = Utils.await(uv.fs_write, fd, out_src, -1)
+      if err then error("fs_write failed for " .. full_out_path) end
+      -- print("F: " .. filepath)
+
+      uv.fs_close(fd)
+    else
       os.execute("mkdir -p " .. options.out_dir .. "/" .. dir)
-      local out_file, err = io.open(full_out_path, "w+")
+      local out_file, err = io.open(full_out_path, "w")
       assert(out_file)
       out_file:write(out_src)
       out_file:close()
-    elseif type(out_val) == "boolean" then
-      if out_val == true then
-        print(filepath)
+    end
+  elseif type(out_val) == "boolean" then
+    if out_val == true then
+      print(filepath)
+    end
+  elseif type(out_val) == "function" then
+    -- The code returned search results in the form of an iterator
+    local line_offsets = {}
+    local lines = {}
+    for offset, line in src:gmatch("()([^\n]*)\n?") do
+      table.insert(line_offsets, offset)
+      table.insert(lines, line)
+    end
+
+    local prev_a = 0
+    local prev_b = -1
+    local line_num = 0
+    local line_offset = 0
+    for a, b in out_val do
+      if a == nil or b == nil then break end
+      -- a = a
+      b = b - 1
+      local match_str = src:sub(a, b)
+
+      assert(a ~= nil and b ~= nil)
+      assert(a >= prev_a)
+      if a == prev_a then
+        assert(b > prev_b)
       end
-    elseif type(out_val) == "function" then
-      -- The code returned search results in the form of an iterator
-      local line_offsets = {}
-      local lines = {}
-      for offset, line in src:gmatch("()([^\n]*)\n?") do
-        table.insert(line_offsets, offset)
-        table.insert(lines, line)
+
+      -- Loop until we find the correct line number
+      while true do
+        local next_line_offset = line_offsets[line_num + 1]
+        if next_line_offset == nil then break end
+        if next_line_offset > a then break end
+        line_num = line_num + 1
+        line_offset = next_line_offset
       end
+      -- Calc line count of match
+      local line_cnt = 1
+      for _ in match_str:gmatch("\n") do
+        line_cnt = line_cnt + 1
+      end
+      -- print("match:")
+      -- print(match_str)
+      -- print("line_cnt is "..line_cnt)
+      -- Calculate the column
+      local col = a - line_offset + 1
 
-      local prev_a = 0
-      local prev_b = -1
-      local line_num = 0
-      local line_offset = 0
-      for a, b in out_val do
-        if a == nil or b == nil then break end
-        a = a
-        b = b - 1
-        local match_str = src:sub(a, b)
-
-        assert(a ~= nil and b ~= nil)
-        assert(a >= prev_a)
-        if a == prev_a then
-          assert(b > prev_b)
-        end
-
-        -- Loop until we find the correct line number
-        while true do
-          local next_line_offset = line_offsets[line_num + 1]
-          if next_line_offset == nil then break end
-          if next_line_offset > a then break end
-          line_num = line_num + 1
-          line_offset = next_line_offset
-        end
-        -- Calc line count of match
-        local line_cnt = 1
-        for _ in match_str:gmatch("\n") do
-          line_cnt = line_cnt + 1
-        end
-        -- print("match:")
-        -- print(match_str)
-        -- print("line_cnt is "..line_cnt)
-        -- Calculate the column
-        local col = a - line_offset + 1
-
-        -- We can now finally print the search result
-        print()
-        print(filepath .. ":" .. line_num .. ":" .. col)
-        for i = line_num, line_num + line_cnt - 1 do
-          local line = lines[i]
-          if line == nil then break end
-          io.write("    ")
-          io.write(line)
-          io.write("\n")
-          io.write("    ")
-          for j = 1, #line do
-            if line_offsets[i] + j <= a then
-              io.write(" ")
-            elseif line_offsets[i] + j <= b + 1 then
-              io.write("‾")
-            end
+      -- We can now finally print the search result
+      print()
+      print(filepath .. ":" .. line_num .. ":" .. col)
+      for i = line_num, line_num + line_cnt - 1 do
+        local line = lines[i]
+        if line == nil then break end
+        io.write("    ")
+        io.write(line)
+        io.write("\n")
+        io.write("    ")
+        for j = 1, #line do
+          if line_offsets[i] + j <= a then
+            io.write(" ")
+          elseif line_offsets[i] + j <= b + 1 then
+            io.write("‾")
           end
-          io.write("\n")
         end
-
-        prev_a = a
-        prev_b = b
+        io.write("\n")
       end
+
+      prev_a = a
+      prev_b = b
     end
   end
 end
@@ -502,16 +591,33 @@ function lct.process_files(options)
     if not ok then error(debug.traceback(co, err), 2) end
   end
 
-  -- Trigger the syncrhonize event, but don't allow coroutines to "await" afterwards.
-
-  sync_event:trigger_and_invalidate()
-  -- Check for deadlock. After resuming every coroutine once, we expect all coroutines to be finished, except if we got a deadlock.
-  for filename, co_obj in pairs(coros) do
-    local co = co_obj.co
-    local status = coroutine.status(co)
-    assert(status == "dead")
+  if USE_LUV then
+    uv.run()
   end
- end
+  sync_event:trigger_and_invalidate()
+  if USE_LUV then
+    uv.run()
+  end
+
+  -- if USE_LUV then
+  --   -- Trigger the syncrhonize event, then wait for coroutines to finish.
+  --   sync_event:trigger_and_invalidate()
+  --   for filename, co_obj in pairs(coros) do
+  --     local co = co_obj.co
+  --     local status = coroutine.status(co)
+  --     assert(status == "dead")
+  --   end
+  -- else
+    -- Trigger the syncrhonize event, but don't allow coroutines to "await" afterwards.
+    -- sync_event:trigger_and_invalidate()
+    -- Check for deadlock. After resuming every coroutine once, we expect all coroutines to be finished, except if we got a deadlock.
+    for filename, co_obj in pairs(coros) do
+      local co = co_obj.co
+      local status = coroutine.status(co)
+      assert(status == "dead")
+    end
+  -- end
+end
 
 --------------------------------------------------------------------------------
 -- Program
@@ -563,7 +669,7 @@ local function parse_args()
   local code = nil
   for i, a in ipairs(arg) do
     if parse_as_code then
-      if input_code == nil then
+      if code == nil then
         code = a
       else
         code = code.." "..a
@@ -605,10 +711,10 @@ local function interpret_code_str(code)
 
     -- Replace
     if A and B then
-      code = [[return s:gsub("]] .. A .. [[", "]] .. B .. [[")]]
+      code = [=[return s:gsub([[]=] .. A .. [=[]], [[]=] .. B .. [=[]])]=]
     -- Search
     elseif A then
-      code = [[return s:gmatch("()]] .. A .. [[()")]]
+      code = [=[return s:gmatch([[()]=] .. A .. [=[()]])]=]
     -- Search but list files only
     else
       assert(B)
@@ -620,10 +726,27 @@ end
 
 local function load_code(code, args)
   -- Lua environment
-  local env = {
-    inspect = require("inspect"),
-    print = print
-  }
+  -- local env = {
+  --   inspect = require("inspect"),
+  --   print = print,
+  --   rawget = rawget,
+  --   getmetatable = getmetatable
+  --   iparis = iparis,
+  --   next = next,
+  --   type = type,
+  --   setmetatable = setmetatable
+  --   rawequal = rawequal,
+  --   string = string,
+  --   coroutine = coroutine,
+  --   rawlen = rawlen,
+  --   assert = assert,
+  --   select = select,
+  --   pairs = pairs,
+  --   tonuber = tonumber,
+  --   debug = debug,
+  --   io = io,
+  -- }
+  local env = _G
 
   -- Check if code is fennel
   local use_fennel = false

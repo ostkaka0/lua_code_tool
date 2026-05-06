@@ -22,21 +22,21 @@ USAGE:
   If no code is given, filepaths are printed.
 
 IMPLICIT VARIABLES IN USER CODE
-  s           string  Full content of the current file (nil if --no-read)
-  events      table   Auto-creating table of one-shot Event objects (keyed by name)
-  sync_event  Event   Fired after all files have been processed once
-  args        table   Parsed CLI args + filepath of the current file (args.filepath)
+  s          - string  Full content of the current file (nil if --no-read)
+  events     - table   Auto-creating table of one-shot Event objects (keyed by name)
+  sync_event - Event   Fired after all files have been processed once
+  args       - table   Parsed CLI args + filepath of the current file (args.filepath)
 
 OUTPUT DIRECTORY
-  Default: /tmp/lua_code_tool/<username>/
+  Defaults to /tmp/lua_code_tool/<username>/
   A shadow copy of the input tree is written here before any in-place changes.
   The directory is cleaned automatically unless --keep is passed.
 
 RETURN VALUE CONTRACT (user code)
-  string    → transformed file content; written to output directory
-  boolean   → if true, filepath is printed (grep/file-list mode)
-  function  → iterator of (start, end+1) byte positions; printed as search results
-  nil       → file is skipped / no output]]
+  string   - transformed file content; written to output directory
+  boolean  - if true, filepath is printed (grep/file-list mode)
+  function - iterator of (start, end+1) byte positions; printed as search results
+  nil      - file is skipped / no output]]
 
 -- TODO: Windows support
 -- TODO: Safety guards
@@ -189,15 +189,10 @@ end
 
 -- shortcut_map is a map with normalized input path-patterns for keys, and and shortcuts for values(may use captures). Only alternative paths with less parts may be picked.
 function Path.choose_best_shortcut(p, shortcut_map)
-  print("sdfsdfdsf")
   print(inspect(shortcut_map))
   local best_p = p
   local best_p_part_cnt = #Path.to_parts_arr(p)
   for k, v in pairs(shortcut_map) do
-    print("key")
-    print(k)
-    print("val")
-    print(v)
     local new_p = p:gsub(k, v)
     local new_p_part_cnt = #Path.to_parts_arr(new_p)
     if new_p_part_cnt < best_p_part_cnt then
@@ -216,7 +211,6 @@ function Path.first_part(p)
 end
 
 function Path.last_part(p)
-  print(p)
   local parts = Path.to_parts_arr(p)
   local num_parts = #parts
   assert(num_parts > 0)
@@ -710,10 +704,20 @@ end
 -- Program
 --------------------------------------------------------------------------------
 local function parse_args()
+  local in_steps = {}
   local argparse = require("argparse")
   local parser = argparse()
     :name "lua_code_tool"
     :description(cli_description)
+  parser:argument "file_patterns" :args("*")
+  parser:option "-c" "--code"
+    :description "/A/ for find, /A/B/ for replace, (...) for fennel, otherwise argument is interpreted as luacode."
+    :args("*")
+    :action(function (a, b, args)
+      for _, arg in ipairs(args) do
+        table.insert(in_steps, arg)
+      end
+    end)
   parser:flag "-a" "--all"
     :description "Include hidden directories"
   parser:mutex(
@@ -727,7 +731,7 @@ local function parse_args()
   )
   parser:mutex(
     parser:flag "-k" "--keep" :description "Do no delete existing file to ourput directory",
-    parser:flag "-c" "--clean" :description "Delete all files in output directory"
+    parser:flag "-d" "--delete" :description "Delete all files in output directory"
   )
   -- parser:mutex(
   --   parser:flag "-g" "--gsub",
@@ -743,35 +747,38 @@ local function parse_args()
     :count "*"
   -- parser:option "-O" "--output-directory"
   --   :args(1)
+  --   :description "Output directory defaults to /tmp/lua_code_tool/<username>/. Note that this program will delete files in output directory by default. To prevent that use --keep to keep files, or --in-place to write back to source files."
   parser:option "-X" "--exclude-dir"
     :count "*"
   parser:option "-E" "--extension"
     :count "*"
 
-  parser:argument "file_patterns" :args("*")
+  
 
-  -- Seperate arguments before "--" and after. Everything after "--" is input-code.
-  local args_for_argparse = {}
-  local parse_as_code = false
-  local code = nil
-  for i, a in ipairs(arg) do
-    if parse_as_code then
-      if code == nil then
-        code = a
-      else
-        code = code.." "..a
-      end
-    else
-      if a == "--" then
-        parse_as_code = true
-      else
-        table.insert(args_for_argparse, a)
-      end
-    end
-  end
+  -- -- Seperate arguments before "--" and after. Everything after "--" is input-code.
+  -- local args_for_argparse = {}
+  -- local parse_as_code = false
+  -- local code = nil
+  -- for i, a in ipairs(arg) do
+  --   if parse_as_code then
+  --     if code == nil then
+  --       code = a
+  --     else
+  --       code = code.." "..a
+  --     end
+  --   else
+  --     if a == "--" then
+  --       parse_as_code = true
+  --     else
+  --       table.insert(args_for_argparse, a)
+  --     end
+  --   end
+  -- end
 
-  local args = parser:parse(args_for_argparse)
-  return args, code
+  -- local args = parser:parse(args_for_argparse)
+  local args = parser:parse()
+
+  return args, in_steps
 end
 
 local function interpret_code_str(code)
@@ -889,7 +896,8 @@ local function load_code(code, args)
 end
 
 local function main()
-  local args, code_str = parse_args()
+  -- local args, code_str = parse_args()
+  local args, in_steps = parse_args()
   if args.verbose then print("Args: " .. inspect(args)) end
   if args.debug then lct.debug = true end
 
@@ -899,17 +907,20 @@ local function main()
   assert(#modified_out_dir > 0, "output directory is incorrect")
   if #modified_out_dir == 0 then os.exit(-1) end
 
-  local code = interpret_code_str(code_str)
-  -- If no code is provided, then simply print the filepaths
-  if not code then
-    code = "print(args.filepath)"
-    args.no_read = true
+  if #in_steps == 0 then
+    in_steps = {"print(args.filepath)"}
+  end
+  local process_steps = {}
+  for _, in_step in ipairs(in_steps) do
+    local code = interpret_code_str(in_step)
+    -- If no code is provided, then simply print the filepaths
+    assert(code)
+    local func = load_code(code, args)
+    table.insert(process_steps, {process=func})
   end
 
-  local func = load_code(code, args)
-
   -- Delete previous files at output directory
-  if args.clean or (code and not args.keep) then
+  if args.delete or (code and not args.keep) then
     assert(out_dir:match("^/tmp/")) -- Only allow /tmp/ for now
     local cmd = "rm -rf " .. out_dir
     if args.verbose then print(cmd) end
@@ -917,10 +928,10 @@ local function main()
   end
 
   -- Process files with out code
-  if code then
-    lct.process_files({process_steps = {{process=func}}, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir, hidden_dirs = args.all, no_read = args.no_read})
-    -- os.remove(lock_filename)
-  end
+  -- if code then
+  lct.process_files({process_steps = process_steps, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir, hidden_dirs = args.all, no_read = args.no_read})
+  -- os.remove(lock_filename)
+  -- end
 
   -- Delete output-directory if empty
   if args.verbose then

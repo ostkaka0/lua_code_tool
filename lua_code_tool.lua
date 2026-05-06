@@ -61,7 +61,8 @@ function Path.normalize(p)
   elseif p:sub(1, 1) == "/" then -- Unix root
     table.insert(parts, "/")
   end
-  for part in Path.to_parts(p) do
+  for the_part in Path.to_parts(p) do
+    local part = the_part
     if is_full and #parts == 0 then -- Windows drive letters should be lower case after normalization
       part = part:lower()
     end 
@@ -341,6 +342,7 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
   local full_out_path = options.out_dir .. "/" .. filepath
   -- print("out_path:" .. full_out_path)
 
+  -- TODO: Maybe replace this code with a "read file step", for CLI we would write "-r" to mark we want a read step.
   local src = nil
   if not options.no_read then
     if not USE_LUV then
@@ -413,15 +415,30 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
     end
   end
 
-  local out_val = options.process_src(src, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
-  if out_val == nil then return end
-  if return_type.val == nil then
-    return_type.val = type(out_val)
-  else
-    -- We assert that the code return an object with the same type for each file. Either string, bool or function(iterator), except nil is ignored.
-    assert(type(out_val) == return_type.val)
+  -- Execute the processing steps.
+  print("HELLO")
+  print(inspect(options))
+  print(inspect(options.process_steps))
+  local out_val = src
+  for _, step in ipairs(options.process_steps) do
+    if out_val == nil and not options.no_read then
+      error("Previous step return nil")
+    end
+    print("SDKFJ")
+    out_val = step.process(out_val, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
+    if out_val == nil then return end
+    if step.return_type == nil then
+      step.return_type = type(out_val)
+    else
+      -- We assert that the code return an object with the same type for each file for each step. Either string, bool or function(iterator), except nil is ignored.
+      assert(type(out_val) == step.return_type)
+    end
+
+    step.sync_event:await() -- Note that the last sync might not be needed in theory, however it's a good thing that we catch possible errors before writing to our first file.
   end
 
+  -- Save to file or print dependingg on type of out_val.
+  -- TODO: Replace this code with an implicit "auto-step" that writes to file or prints.
   if type(out_val) == "string" then -- Write to file
     local out_src = out_val
     local parent_dir = Path.join(options.out_dir, dir)
@@ -526,7 +543,7 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
 end
 
 lct.default_options = {
-  process_src = false,
+  process_steps = {},
   process_file = lct.process_file_default,
   in_dirs = {"."},
   out_dir = "/tmp/lua_code_tool/" .. Path.last_part(Path.user_home()) .. "/",
@@ -547,7 +564,7 @@ function lct.process_files(options)
     options.in_dirs = lct.default_options.in_dirs
   end
 
-  assert(options.process_src, "process_src must be set")
+  assert(options.process_steps, "process_steps must be set")
   assert(options.in_dirs, "in_dirs must be set")
   assert(next(options.in_dirs), "in_dirs must be set")
 
@@ -557,11 +574,30 @@ function lct.process_files(options)
     filepaths[i] = filepath
   end
 
+  -- Assert that options.process_files is a a sequence of tables
+  do
+    local count = 0
+    for k, v in pairs(options.process_steps) do
+      count = count + 1
+      if type(k) ~= "number" or k < 1 or type(v) ~= "table" then
+        error("options.process_steps must be a sequence of tables")
+      end
+    end
+    assert(#options.process_steps == count)
+  end
+
   local coros = {}
   local return_type = {val = nil}
-  -- Iterate files recursively
   local events = lct.create_events_table()
   local sync_event = lct.Event:new()
+
+  -- Create sync events for each process-step.
+  for _, step in ipairs(options.process_steps) do
+    step.sync_event = lct.Event:new()
+    -- TODO maybe: if step.init then step.init() end -- and similar, if it would be useful for anything.
+  end
+
+  -- Iterate files recursively
   for _, filepath in ipairs(filepaths) do
     local dir, filename, basename, ext = Path.split(filepath)
     local attr = lfs.attributes(filepath)
@@ -607,6 +643,12 @@ function lct.process_files(options)
 
   if USE_LUV then
     uv.run()
+  end
+  for _, step in ipairs(options.process_steps) do
+    step.sync_event:trigger_and_invalidate()
+    if USE_LUV then
+      uv.run()
+    end
   end
   sync_event:trigger_and_invalidate()
   if USE_LUV then
@@ -815,11 +857,7 @@ local function load_code(code, args)
   return func
 end
 
---------------------------------------------------------------------------------
--- main-code
---------------------------------------------------------------------------------
-local is_main_file = not pcall(debug.getlocal, 4, 1)
-if is_main_file then
+local function main()
   local args, code_str = parse_args()
   if args.verbose then print("Args: " .. inspect(args)) end
   if args.debug then lct.debug = true end
@@ -849,7 +887,7 @@ if is_main_file then
 
   -- Process files with out code
   if code then
-    lct.process_files({process_src = func, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir, hidden_dirs = args.all, no_read = args.no_read})
+    lct.process_files({process_steps = {{process=func}}, in_dirs = args.file_patterns, out_dir = args.output_directory, in_exts = args.extension, verbose = args.verbose, quiet = args.quiet, exclude_dirs = args.exclude_dir, hidden_dirs = args.all, no_read = args.no_read})
     -- os.remove(lock_filename)
   end
 
@@ -903,6 +941,11 @@ if is_main_file then
       os.execute(cp_cmd)
     end
   end
+end
+
+local is_main_file = not pcall(debug.getlocal, 4, 1)
+if is_main_file then
+  main()
 end
 
 return lct

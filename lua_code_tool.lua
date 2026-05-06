@@ -30,6 +30,8 @@ local lct = {} -- Exported module
 --------------------------------------------------------------------------------
 -- Path
 --------------------------------------------------------------------------------
+-- TODO: Support Win32 Long Paths (MAX_PATH 260 limit); requires \\?\ prefix for absolute paths and Manifest opt-in.
+
 local Path = {} -- path "submodule"
 lct.Path = Path
 -- Note that the first / on a full path will not become a part.
@@ -46,15 +48,26 @@ end
 
 -- Normalize path, note because we don't convert to full path, we may get a few leading "..". There is a special case for leading ".." when the path was a full path, then we get a "/" and a number of "..", this is an invalid path, but is the best we can do, anyways the path will be unusable and always result in an error somewhere, since the os won't let us open any file ever with such paths.
 function Path.normalize(p)
-  -- Use / instead of \
   p = p:gsub("\\", "/")
+  assert(not p:match("^//"), "UNC paths are not supported")
+  assert(not p:match("^%a:[^/]"), "Drive-relative paths (e.g. C:foo) are not supported")
+  assert(not p:match(":[^/]"), "Alternate Data Streams are not supported")  -- catches file.txt:stream
   -- Split path into parts, remove previous part when "..", do't insert for ".".
   local parts = {} -- The first few parts can all be "..", but the rest must be neither "." or "..".
   local depth = 0 -- length of parts excluding initial ".." as well as an "/" if we had a full path.
-  if Path.is_full(p) then
+  local is_full = Path.is_full(p)
+  if p:sub(1, 2) == "//" then -- Windows UNC path
+    table.insert(parts, "//")
+  elseif p:sub(1, 1) == "/" then -- Unix root
     table.insert(parts, "/")
   end
   for part in Path.to_parts(p) do
+    if is_full and #parts == 0 then -- Windows drive letters should be lower case after normalization
+      part = part:lower()
+    end 
+    if part:sub(-1) == ":" and #parts == 0 then -- Drive letters must be like "C:/" and not "C:"
+      part = part .. "/"
+    end
     if part == "~" and #parts == 0 then
       table.insert(parts, "~") -- TODO: perhaps implement a Path.get_first or split_root. This code would then be simplified away.
     elseif part == ".." then
@@ -86,13 +99,16 @@ end
 
 function Path.join(a, b)
   assert(not Path.is_absolute(b))
-  if     a == "." then
+  if     a == "." or a == "" then
     return b
-  elseif b == "." then
+  elseif b == "." or b == "" then
     return a
   else
-    a = a:gsub("/+$", "") -- Remove trailing /
-    return a .. "/" .. b
+    if a:sub(-1) == "/" or a:sub(-1) == "\\" or b:sub(1, 1) == "/" or b:sub(1, 1) == "\\" then -- Only add "/" if needed
+      return a .. b
+    else
+      return a .. "/" .. b
+    end
   end
 end
 
@@ -112,7 +128,11 @@ function Path.is_full(p)
 end
 
 function Path.user_home()
-  return os.getenv("HOME")
+  local home = os.getenv("HOME") or os.getenv("USERPROFILE")
+  if not home then
+    error("Expected enviornment variable $HOME")
+  end
+  return home
 end
 
 function Path.current_dir()
@@ -166,13 +186,7 @@ function Path.last_part(p)
   return parts[num_parts]
 end
 
-function Path.get_home()
-  local home = os.getenv("HOME")
-  if not home then
-    error("Expected enviornment variable $HOME")
-  end
-  return home
-end
+
 
 --------------------------------------------------------------------------------
 -- Event
@@ -515,7 +529,7 @@ lct.default_options = {
   process_src = false,
   process_file = lct.process_file_default,
   in_dirs = {"."},
-  out_dir = "/tmp/lua_code_tool/" .. Path.last_part(Path.get_home()) .. "/",
+  out_dir = "/tmp/lua_code_tool/" .. Path.last_part(Path.user_home()) .. "/",
   exclude_dirs = {},
   in_exts = false,
   verbose = false,

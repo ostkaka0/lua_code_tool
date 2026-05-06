@@ -2,6 +2,42 @@
 -- Author: John Emanuelsson
 -- File created 2025-04-05 15:46:33 CEST
 
+local USE_LUV = true
+
+local cli_description =
+[[A tool for refactoring, searching, generating code and other batch-processing.
+
+It applies user-supplied code to every file in a directory tree, writes results to a temp output directory, shows a diff, and optionally writes changes back in-place.
+
+USAGE:
+  lua_code_tool [OPTIONS] [DIRS...] -- <CODE>
+
+  <CODE> may be:
+    /pattern/replacement/   Lua gsub replace across file content
+    /pattern/               Search
+    //pattern/              File-list: print filepath if pattern matches
+    (fennel expr)           Fennel code, transpiled to Lua before execution
+    <lua expression>        Arbitrary Lua; receives implicit variables
+
+  If no code is given, filepaths are printed.
+
+IMPLICIT VARIABLES IN USER CODE
+  s           string  Full content of the current file (nil if --no-read)
+  events      table   Auto-creating table of one-shot Event objects (keyed by name)
+  sync_event  Event   Fired after all files have been processed once
+  args        table   Parsed CLI args + filepath of the current file (args.filepath)
+
+OUTPUT DIRECTORY
+  Default: /tmp/lua_code_tool/<username>/
+  A shadow copy of the input tree is written here before any in-place changes.
+  The directory is cleaned automatically unless --keep is passed.
+
+RETURN VALUE CONTRACT (user code)
+  string    → transformed file content; written to output directory
+  boolean   → if true, filepath is printed (grep/file-list mode)
+  function  → iterator of (start, end+1) byte positions; printed as search results
+  nil       → file is skipped / no output]]
+
 -- TODO: Windows support
 -- TODO: Safety guards
 -- TODO: Config file
@@ -14,10 +50,10 @@
 -- TODO: Individual file inputs
 -- TODO: Consider replacing argparse, and remove requirement for " and ' of code-arguments
 
--- local USE_LUV = true
+--------------------------------------------------------------------------------
 
 local lfs = require "lfs"
-inspect =  require "inspect"
+local inspect =  require "inspect"
 -- local fs = require "fs"
 local uv
 ---@diagnostic disable: undefined-global
@@ -416,15 +452,11 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
   end
 
   -- Execute the processing steps.
-  print("HELLO")
-  print(inspect(options))
-  print(inspect(options.process_steps))
   local out_val = src
   for _, step in ipairs(options.process_steps) do
     if out_val == nil and not options.no_read then
       error("Previous step return nil")
     end
-    print("SDKFJ")
     out_val = step.process(out_val, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
     if out_val == nil then return end
     if step.return_type == nil then
@@ -443,7 +475,6 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
     local out_src = out_val
     local parent_dir = Path.join(options.out_dir, dir)
     if USE_LUV then
-      -- print("MOO")
       local write_mode = 6*64 + 4*8 + 4 -- 644
       local dir_mode = 7*64 + 5*8 + 5 -- 755
       local err, fd = nil, nil
@@ -682,21 +713,21 @@ local function parse_args()
   local argparse = require("argparse")
   local parser = argparse()
     :name "lua_code_tool"
-    :description "A tool for refactoring, searching and generating code."
-
+    :description(cli_description)
   parser:flag "-a" "--all"
+    :description "Include hidden directories"
   parser:mutex(
     parser:flag "-v" "--verbose",
-    parser:flag "-q" "--quiet"
+    parser:flag "-q" "--quiet"   :description "The tool itself will not print or prompt the user, except for errors"
   )
-  parser:flag "-i" "--in-place"
+  parser:flag "-i" "--in-place" :description "Write back to source files after confirmation"
   parser:mutex(
-    parser:flag "-y" "--yes",
-    parser:flag "-n" "--no"
+    parser:flag "-y" "--yes" :description "Auto-accepts write-backs to source files",
+    parser:flag "-n" "--no"  :description "Auto-denies write-backs to source files"
   )
   parser:mutex(
-    parser:flag "-k" "--keep",
-    parser:flag "-c" "--clean"
+    parser:flag "-k" "--keep" :description "Do no delete existing file to ourput directory",
+    parser:flag "-c" "--clean" :description "Delete all files in output directory"
   )
   -- parser:mutex(
   --   parser:flag "-g" "--gsub",

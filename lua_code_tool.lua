@@ -782,7 +782,7 @@ local function parse_args()
 end
 
 local function interpret_code_str(code)
-  -- If code has no non-space-characters, then make it nil
+  -- If code is only whitespace, then make it nil
   if code and code:match("^%s*$") then
     code = nil
   end
@@ -896,7 +896,6 @@ local function load_code(code, args)
 end
 
 local function main()
-  -- local args, code_str = parse_args()
   local args, in_steps = parse_args()
   if args.verbose then print("Args: " .. inspect(args)) end
   if args.debug then lct.debug = true end

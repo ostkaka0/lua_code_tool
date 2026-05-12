@@ -937,7 +937,8 @@ local function main()
   end
 
   -- Delete previous files at output directory
-  if args.delete or (code and not args.keep) then
+  -- TODO: Don't delete if pipeline is known to not output files.
+  if args.delete or (not args.keep) then
     assert(out_dir:match("^/tmp/")) -- Only allow /tmp/ for now
     local cmd = "rm -rf " .. out_dir
     if args.verbose then print(cmd) end

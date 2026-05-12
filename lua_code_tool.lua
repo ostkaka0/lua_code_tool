@@ -9,18 +9,6 @@ local cli_description =
 
 It applies user-supplied code to every file in a directory tree, writes results to a temp output directory, shows a diff, and optionally writes changes back in-place.
 
-USAGE:
-  lua_code_tool [DIRS...] [OPTIONS] -c <CODE>
-
-  <CODE> may be:
-    /pattern/replacement/   Lua gsub replace across file content
-    /pattern/               Search
-    //pattern/              File-list: print filepath if pattern matches
-    (fennel expr)           Fennel code, transpiled to Lua before execution
-    <lua expression>        Arbitrary Lua; receives implicit variables
-
-  If no code is given, filepaths are printed.
-
 IMPLICIT VARIABLES IN USER CODE
   s          - string  Full content of the current file (nil if --no-read)
   events     - table   Auto-creating table of one-shot Event objects (keyed by name)
@@ -715,7 +703,15 @@ local function parse_args()
     :args("*")
     :action(function (a, b, args)
       for _, arg in ipairs(args) do
-        table.insert(in_steps, arg)
+        table.insert(in_steps, {kind = "code", value = arg})
+      end
+    end)
+  parser:option "-C" "--code-file"
+    :description "Read Lua or Fennel code from file. Each file becomes one pipeline step."
+    :args("*")
+    :action(function (a, b, args)
+      for _, arg in ipairs(args) do
+        table.insert(in_steps, {kind = "file", value = arg})
       end
     end)
   parser:flag "-a" "--all"
@@ -753,8 +749,7 @@ local function parse_args()
   parser:option "-E" "--extension"
     :count "*"
 
-  
-
+  -- TODO: Delete this old commented code:
   -- -- Seperate arguments before "--" and after. Everything after "--" is input-code.
   -- local args_for_argparse = {}
   -- local parse_as_code = false
@@ -774,11 +769,20 @@ local function parse_args()
   --     end
   --   end
   -- end
-
   -- local args = parser:parse(args_for_argparse)
+  
   local args = parser:parse()
-
   return args, in_steps
+end
+
+local function read_text_file(filepath)
+  local f, err = io.open(filepath, "r")
+  if not f then
+    error("Failed to open code file " .. filepath .. ": " .. tostring(err))
+  end
+  local content = f:read("*a")
+  f:close()
+  return content
 end
 
 local function interpret_code_str(code)
@@ -818,7 +822,26 @@ local function interpret_code_str(code)
   return code
 end
 
-local function load_code(code, args)
+local function load_code(step, args)
+  local code = nil
+  local chunk_name = "chunk"
+  local fennel_code = nil
+
+  if step.kind == "file" then
+    code = read_text_file(step.value)
+    chunk_name = "@" .. step.value
+    local _, _, _, ext = Path.split(step.value)
+    if ext == ".fnl" then
+      fennel_code = code
+    end
+  elseif step.kind == "code" then
+    code = interpret_code_str(step.value)
+  else
+    error("Unknown pipeline step kind: " .. tostring(step.kind))
+  end
+
+  assert(code)
+
   -- Lua environment
   -- local env = {
   --   inspect = require("inspect"),
@@ -843,17 +866,15 @@ local function load_code(code, args)
   local env = _G
 
   -- Check if code is fennel
-  local use_fennel = false
-  if code and code:sub(1, 1) == "(" and code:sub(-1, -1) == ")" then
-    use_fennel = true
+  if not fennel_code and step.kind == "code" and code and code:sub(1, 1) == "(" and code:sub(-1, -1) == ")" then
+    fennel_code = code:sub(2, -2)
   end
 
   -- Translate fennel to lua
-  if code and use_fennel then
+  if fennel_code then
     local fennel = require("fennel")
     -- table.insert(package.loaders or package.searchers, fennel.searcher)
 
-    local fennel_code = code:sub(2, -2)
     code = fennel.compileString(fennel_code)
     if args.verbose then
       print("Fennel code:")
@@ -874,7 +895,7 @@ local function load_code(code, args)
     local err = nil
     if args.verbose then print("Code: " .. code) end
     if args.verbose then print("Processing...") end
-    func, err = load(code, "chunk", "t", env)
+    func, err = load(code, chunk_name or "chunk", "t", env)
     if err then error(err) end
 
     local function print_func(_, _)
@@ -907,14 +928,11 @@ local function main()
   if #modified_out_dir == 0 then os.exit(-1) end
 
   if #in_steps == 0 then
-    in_steps = {"print(args.filepath)"}
+    in_steps = {{kind = "code", value = "print(args.filepath)"}}
   end
   local process_steps = {}
   for _, in_step in ipairs(in_steps) do
-    local code = interpret_code_str(in_step)
-    -- If no code is provided, then simply print the filepaths
-    assert(code)
-    local func = load_code(code, args)
+    local func = load_code(in_step, args)
     table.insert(process_steps, {process=func})
   end
 

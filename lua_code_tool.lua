@@ -10,7 +10,7 @@ local cli_description =
 It applies user-supplied code to every file in a directory tree, writes results to a temp output directory, shows a diff, and optionally writes changes back in-place.
 
 USAGE:
-  lua_code_tool [OPTIONS] [DIRS...] -- <CODE>
+  lua_code_tool [DIRS...] [OPTIONS] -c <CODE>
 
   <CODE> may be:
     /pattern/replacement/   Lua gsub replace across file content

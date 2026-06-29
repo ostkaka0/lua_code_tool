@@ -385,7 +385,8 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       uv.fs_open(filepath, "r", read_mode, function(...)
         -- print("fs_open of "..filepath)
         -- print(inspect({...}))
-        coroutine.resume(co, ...)
+        local ok, err = coroutine.resume(co, ...)
+        if not ok then error(debug.traceback(co, err), 2) end
       end)
       err, fd = coroutine.yield()
       -- print("fd:"..fd)
@@ -396,7 +397,8 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       uv.fs_fstat(fd, function(...)
         -- print("fs_stat of "..filepath)
         -- print(inspect({...}))
-        coroutine.resume(co, ...)
+        local ok, err = coroutine.resume(co, ...)
+        if not ok then error(debug.traceback(co, err), 2) end
       end)
       err, stat = coroutine.yield()
       if err then error("fs_fstat() failed for " .. filepath) end
@@ -406,7 +408,8 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       uv.fs_read(fd, stat.size, 0, function(...)
         -- print("fs_read of "..filepath)
         -- print(inspect({...}))
-        coroutine.resume(co, ...)
+        local ok, err = coroutine.resume(co, ...)
+        if not ok then error(debug.traceback(co, err), 2) end
       end)
       err, src = coroutine.yield()
       if err then error("Failed reading " .. filepath) end

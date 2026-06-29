@@ -303,6 +303,20 @@ function Utils.filter_ext(ext, options)
   return empty or found
 end
 
+function Utils.mkdir_p(base_dir, dir, mode)
+  local path = base_dir
+  for part in Path.to_parts(dir) do
+    path = Path.join(path, part)
+    local err = Utils.await(uv.fs_mkdir, path, mode)
+    if err then
+      local _, stat = Utils.await(uv.fs_stat, path)
+      if not tostring(err):match("EEXIST") or not stat or stat.type ~= "directory" then
+        error("fs_mkdir() failed for " .. path)
+      end
+    end
+  end
+end
+
 function Utils.await(async_func, ...)
   local co = coroutine.running()
   local resumed = false
@@ -464,8 +478,7 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       local dir_mode = 7*64 + 5*8 + 5 -- 755
       local err, fd = nil, nil
 
-      err = Utils.await(uv.fs_mkdir, parent_dir, dir_mode)
-      -- if err then error("fs_mkdir() failed for " .. parent_dir) end
+      Utils.mkdir_p(options.out_dir, dir, dir_mode)
       -- print("D: " .. parent_dir)
 
       err, fd = Utils.await(uv.fs_open, full_out_path, "w", write_mode)
@@ -947,6 +960,7 @@ local function main()
     if args.verbose then print(cmd) end
     os.execute(cmd)
   end
+  os.execute("mkdir -p " .. out_dir)
 
   -- Process files with out code
   -- if code then

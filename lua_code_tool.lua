@@ -665,6 +665,7 @@ function lct.process_files(options)
     end
     -- Call process_file as coroutine if filetype is file
     if filetype == "file" then
+      if coros[filepath] then goto continue end
       -- TODO: Use io.popen
       file_count = file_count + 1
       local co = coroutine.create(function(...)

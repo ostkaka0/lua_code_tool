@@ -2,7 +2,7 @@
 -- Author: John Emanuelsson
 -- File created 2025-04-05 15:46:33 CEST
 
-local USE_LUV = true
+local USE_LUV = false
 
 local cli_description =
 [[A tool for refactoring, searching, generating code and other batch-processing.
@@ -461,8 +461,9 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       local dir_mode = 7*64 + 5*8 + 5 -- 755
       local err, fd = nil, nil
 
+      -- TODO: Create parent directory
       err = Utils.await(uv.fs_mkdir, parent_dir, dir_mode)
-      -- if err then error("fs_mkdir() failed for " .. parent_dir) end
+      if err then error("fs_mkdir() failed for " .. parent_dir) end
       -- print("D: " .. parent_dir)
 
       err, fd = Utils.await(uv.fs_open, full_out_path, "w", write_mode)
@@ -613,8 +614,15 @@ function lct.process_files(options)
   -- Iterate files recursively
   for _, filepath in ipairs(filepaths) do
     local dir, filename, basename, ext = Path.split(filepath)
-    local attr = lfs.attributes(filepath)
+    local attr, attr_err = lfs.attributes(filepath)
+    if not attr then -- File is unavailable
+      if options.verbose then
+        print("File " .. filepath .. " is unavailable, skipping. Attribute error: " .. tostring(err))
+      end
+      goto continue
+    end
     local filetype = attr.mode
+
     if options.verbose then
       print("Walking path: " .. filepath)
       print("filetype: " .. filetype)
@@ -809,7 +817,7 @@ local function interpret_code_str(code)
 
     -- Replace
     if A and B then
-      code = [=[return s:gsub([[]=] .. A .. [=[]], [[]=] .. B .. [=[]])]=]
+      code = [==[return s:gsub([=[]==] .. A .. [==[]=], [=[]==] .. B .. [==[]=])]==]
     -- Search
     elseif A then
       code = [=[return s:gmatch([[()]=] .. A .. [=[()]])]=]
@@ -895,6 +903,7 @@ local function load_code(step, args)
     local err = nil
     if args.verbose then print("Code: " .. code) end
     if args.verbose then print("Processing...") end
+    print(code)
     func, err = load(code, chunk_name or "chunk", "t", env)
     if err then error(err) end
 

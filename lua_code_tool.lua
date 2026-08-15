@@ -269,6 +269,33 @@ function lct.create_events_table()
     end
   })
 end
+
+lct.Barrier = {}
+lct.Barrier.__index = lct.Barrier
+local function release_barrier(barrier)
+  local waiters = barrier.waiters
+  barrier.waiters = {}
+  for _, co in ipairs(waiters) do
+    local ok, err = coroutine.resume(co)
+    if not ok then error(debug.traceback(co, err), 2) end
+  end
+end
+function lct.Barrier:new(count)
+  return setmetatable({count = count, waiters = {}}, self)
+end
+function lct.Barrier:remove()
+  self.count = self.count - 1
+  if #self.waiters == self.count then release_barrier(self) end
+end
+function lct.Barrier:await()
+  if #self.waiters + 1 == self.count then
+    release_barrier(self)
+  else
+    local co = coroutine.running()
+    table.insert(self.waiters, co)
+    return coroutine.yield()
+  end
+end
 --------------------------------------------------------------------------------
 -- Utils
 --------------------------------------------------------------------------------
@@ -301,6 +328,20 @@ function Utils.filter_ext(ext, options)
     if e == ext then found = true end
   end
   return empty or found
+end
+
+function Utils.mkdir_p(base_dir, dir, mode)
+  local path = base_dir
+  for part in Path.to_parts(dir) do
+    path = Path.join(path, part)
+    local err = Utils.await(uv.fs_mkdir, path, mode)
+    if err then
+      local _, stat = Utils.await(uv.fs_stat, path)
+      if not tostring(err):match("EEXIST") or not stat or stat.type ~= "directory" then
+        error("fs_mkdir() failed for " .. path)
+      end
+    end
+  end
 end
 
 function Utils.await(async_func, ...)
@@ -343,7 +384,7 @@ end
 --------------------------------------------------------------------------------
 -- lct
 --------------------------------------------------------------------------------
-function lct.process_file_default(filepath, options, events, sync_event, return_type)
+function lct.process_file_default(filepath, options, events, barrier, step_barrier, return_type)
   local dir, filename, basename, ext = Path.split(filepath)
   if not Utils.filter_ext(ext, options) then return end
   -- for k, v in pairs(options.in_exts) do print(k .. " " .. v) end 
@@ -385,7 +426,8 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       uv.fs_open(filepath, "r", read_mode, function(...)
         -- print("fs_open of "..filepath)
         -- print(inspect({...}))
-        coroutine.resume(co, ...)
+        local ok, err = coroutine.resume(co, ...)
+        if not ok then error(debug.traceback(co, err), 2) end
       end)
       err, fd = coroutine.yield()
       -- print("fd:"..fd)
@@ -396,7 +438,8 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       uv.fs_fstat(fd, function(...)
         -- print("fs_stat of "..filepath)
         -- print(inspect({...}))
-        coroutine.resume(co, ...)
+        local ok, err = coroutine.resume(co, ...)
+        if not ok then error(debug.traceback(co, err), 2) end
       end)
       err, stat = coroutine.yield()
       if err then error("fs_fstat() failed for " .. filepath) end
@@ -406,7 +449,8 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       uv.fs_read(fd, stat.size, 0, function(...)
         -- print("fs_read of "..filepath)
         -- print(inspect({...}))
-        coroutine.resume(co, ...)
+        local ok, err = coroutine.resume(co, ...)
+        if not ok then error(debug.traceback(co, err), 2) end
       end)
       err, src = coroutine.yield()
       if err then error("Failed reading " .. filepath) end
@@ -439,7 +483,7 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
     if out_val == nil and not options.no_read then
       error("Previous step return nil")
     end
-    out_val = step.process(out_val, events, sync_event, {filepath=filepath, prnt=prnt, options=options})
+    out_val = step.process(out_val, events, barrier, {filepath=filepath, prnt=prnt, options=options})
     if out_val == nil then return end
     if step.return_type == nil then
       step.return_type = type(out_val)
@@ -448,7 +492,7 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       assert(type(out_val) == step.return_type)
     end
 
-    step.sync_event:await() -- Note that the last sync might not be needed in theory, however it's a good thing that we catch possible errors before writing to our first file.
+    step_barrier:await() -- Note that the last sync might not be needed in theory, however it's a good thing that we catch possible errors before writing to our first file.
   end
 
   -- Save to file or print dependingg on type of out_val.
@@ -461,9 +505,7 @@ function lct.process_file_default(filepath, options, events, sync_event, return_
       local dir_mode = 7*64 + 5*8 + 5 -- 755
       local err, fd = nil, nil
 
-      -- TODO: Create parent directory
-      err = Utils.await(uv.fs_mkdir, parent_dir, dir_mode)
-      if err then error("fs_mkdir() failed for " .. parent_dir) end
+      Utils.mkdir_p(options.out_dir, dir, dir_mode)
       -- print("D: " .. parent_dir)
 
       err, fd = Utils.await(uv.fs_open, full_out_path, "w", write_mode)
@@ -601,15 +643,11 @@ function lct.process_files(options)
   end
 
   local coros = {}
+  local file_count = 0
   local return_type = {val = nil}
   local events = lct.create_events_table()
-  local sync_event = lct.Event:new()
-
-  -- Create sync events for each process-step.
-  for _, step in ipairs(options.process_steps) do
-    step.sync_event = lct.Event:new()
-    -- TODO maybe: if step.init then step.init() end -- and similar, if it would be useful for anything.
-  end
+  local barrier = nil
+  local step_barrier = nil
 
   -- Iterate files recursively
   for _, filepath in ipairs(filepaths) do
@@ -634,8 +672,14 @@ function lct.process_files(options)
     end
     -- Call process_file as coroutine if filetype is file
     if filetype == "file" then
+      if coros[filepath] then goto continue end
       -- TODO: Use io.popen
-      local co = coroutine.create(options.process_file)
+      file_count = file_count + 1
+      local co = coroutine.create(function(...)
+        options.process_file(...)
+        barrier:remove()
+        step_barrier:remove()
+      end)
       coros[filepath] = {co = co}
     -- Recurse if filetype is directory
     elseif filetype == "directory" then
@@ -652,26 +696,19 @@ function lct.process_files(options)
     ::continue::
   end
 
+  barrier = lct.Barrier:new(file_count)
+  step_barrier = lct.Barrier:new(file_count)
+
   -- Run all coroutines
   -- Note, some coroutines may yield on events, but all of them should be resumed by other coroutines in the end.
   for filepath, co_obj in pairs(coros) do
     local co = co_obj.co
     local status = coroutine.status(co)
     assert(status == "suspended")
-    local ok, err = coroutine.resume(co, filepath, options, events, sync_event, return_type)
+    local ok, err = coroutine.resume(co, filepath, options, events, barrier, step_barrier, return_type)
     if not ok then error(debug.traceback(co, err), 2) end
   end
 
-  if USE_LUV then
-    uv.run()
-  end
-  for _, step in ipairs(options.process_steps) do
-    step.sync_event:trigger_and_invalidate()
-    if USE_LUV then
-      uv.run()
-    end
-  end
-  sync_event:trigger_and_invalidate()
   if USE_LUV then
     uv.run()
   end
@@ -894,7 +931,7 @@ local function load_code(step, args)
 
   -- Add hidden parameters to our code
   if code then
-    code = [[s, events, sync_event, args = ...; ]] .. code
+    code = [[local s, events, barrier, args = ...; ]] .. code
   end
 
   -- Load the code
@@ -953,6 +990,7 @@ local function main()
     if args.verbose then print(cmd) end
     os.execute(cmd)
   end
+  os.execute("mkdir -p " .. out_dir)
 
   -- Process files with out code
   -- if code then

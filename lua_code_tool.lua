@@ -44,9 +44,13 @@ local lfs = require "lfs"
 local inspect =  require "inspect"
 -- local fs = require "fs"
 local uv
+local realpath
 ---@diagnostic disable: undefined-global
 if USE_LUV then
   uv = require "luv"
+  realpath = uv.fs_realpath
+else
+  realpath = require("posix.stdlib").realpath
 end
 
 local lct = {} -- Exported module
@@ -172,6 +176,11 @@ function Path.full(p)
       p = Path.join(Path.current_dir(), p)
     end
   end
+  return Path.normalize(p)
+end
+
+function Path.real(p)
+  p = assert(realpath(Path.full(p)))
   return Path.normalize(p)
 end
 
@@ -611,8 +620,6 @@ lct.default_options = {
   no_read = false,
 }
 
--- TODO: detect duplicate filepaths
--- TODO: detect when a symbol link leads back to a previously iterated filepath
 function lct.process_files(options)
   Utils.set_defaults_strict(options, lct.default_options)
   if options.verbose then print("options: " .. inspect(options)) end
@@ -642,7 +649,15 @@ function lct.process_files(options)
     assert(#options.process_steps == count)
   end
 
+  local working_dir = Path.real(Path.current_dir())
+  local working_prefix = working_dir
+  -- Add "/" so sibling paths sharing the directory name do not match.
+  if working_prefix:sub(-1) ~= "/" then
+    working_prefix = working_prefix .. "/"
+  end
+
   local coros = {}
+  local visited = {}
   local file_count = 0
   local return_type = {val = nil}
   local events = lct.create_events_table()
@@ -651,6 +666,10 @@ function lct.process_files(options)
 
   -- Iterate files recursively
   for _, filepath in ipairs(filepaths) do
+    filepath = Path.real(filepath)
+    -- Skip paths outside the working directory.
+    if (filepath .. "/"):sub(1, #working_prefix) ~= working_prefix then goto continue end
+
     local dir, filename, basename, ext = Path.split(filepath)
     local attr, attr_err = lfs.attributes(filepath)
     if not attr then -- File is unavailable
@@ -670,9 +689,14 @@ function lct.process_files(options)
     for _, d in ipairs(options.exclude_dirs) do -- filter out exclude_dirs
       if filepath:sub(-#d) == d then goto continue end
     end
+    -- Skip filesystem objects already reached through another path.
+    local id = tostring(attr.dev) .. ":" .. tostring(attr.ino)
+    if visited[id] then goto continue end
+    visited[id] = true
+
     -- Call process_file as coroutine if filetype is file
     if filetype == "file" then
-      if coros[filepath] then goto continue end
+      assert(not coros[filepath])
       -- TODO: Use io.popen
       file_count = file_count + 1
       local co = coroutine.create(function(...)
